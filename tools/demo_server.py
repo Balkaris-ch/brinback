@@ -15,8 +15,11 @@ W, h = [], 1000
 for mon, ts in names.items():
     for k, t in enumerate(ts):
         x, y, w, hh = quad(mon, k)
-        if mon == 2: x, y, w, hh = M[2]["x"] + 120 + k * 380, 120 + k * 160, 1500, 900
-        W.append(dict(h=str(h), title=t, process="claude", claude=True, x=x, y=y, w=w, h2=hh, vx=x + 7, vy=y, vw=w - 14, vh=hh - 7, min=False, max=False, z=len(W), mon=mon)); h += 1
+        snapped = False
+        if mon == 2:     # Right: two windows snapped side by side in Windows, plus one behind
+            if k < 2: x, y, w, hh, snapped = M[2]["x"] - 7 + k * 1280, 0, 1294, 1447, True
+            else: x, y, w, hh = M[2]["x"] + 600, 300, 1200, 800
+        W.append(dict(h=str(h), title=t, process="claude", claude=True, x=x, y=y, w=w, h2=hh, vx=x + 7, vy=y, vw=w - 14, vh=hh - 7, min=False, max=False, z=len(W) if mon != 2 or k < 2 else 99, mon=mon, snapped=snapped)); h += 1
 def slots(mon, titles, missing=()):
     out = []
     for k, t in enumerate(titles):
@@ -29,8 +32,9 @@ G = [dict(id="web", name="Website", auto=True, saved="21 Nov 09:20", slots=slots
 for g in G: g["open"] = sum(s["open"] for s in g["slots"])
 D = [dict(mon=0, monName="Left", tiled=True, coverage=1, behind=0, handles=[w["h"] for w in W if w["mon"] == 0], savedAs="Website"),
      dict(mon=1, monName="Main", tiled=True, coverage=1, behind=1, handles=[w["h"] for w in W if w["mon"] == 1], savedAs=None),
-     dict(mon=2, monName="Right", tiled=False, coverage=.7, behind=0, handles=[w["h"] for w in W if w["mon"] == 2], savedAs=None)]
-STATE = dict(monitors=M, windows=W, groups=G, detected=D, detectedAll=D, settings=dict(autoRestore=True, startWithWindows=True), claudeFound=True, version="1.1.0")
+     dict(mon=2, monName="Right", tiled=True, coverage=1, behind=1, handles=[w["h"] for w in W if w["mon"] == 2 and w["snapped"]], savedAs=None)]
+for d in D: d["snap"] = [w["h"] for w in W if w["mon"] == d["mon"] and w.get("snapped")]
+STATE = dict(monitors=M, windows=W, groups=G, detected=D, detectedAll=D, settings=dict(autoRestore=True, startWithWindows=True, keepSnaps=False), claudeFound=True, version="1.2.0")
 class H(http.server.BaseHTTPRequestHandler):
     def send(self, code, body, ct):
         b = body.encode(); self.send_response(code); self.send_header("Content-Type", ct); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)

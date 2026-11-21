@@ -175,6 +175,15 @@
   .layers .on .lf { fill: rgba(37,247,22,.11); }
   .layers .on .le { stroke: var(--signal); stroke-width: 1.5; filter: drop-shadow(0 0 5px rgba(37,247,22,.5)); }
   .layers .dim { opacity: .3; }
+  /* a snap group Windows made that is not kept yet: dashed paper, not signal green */
+  .layers .snapl .lf { fill: rgba(244,243,240,.05); }
+  .layers .snapl .le { stroke: var(--paper); stroke-opacity: .65; stroke-dasharray: 5 4; }
+  .layers .snapl.on .le { stroke-opacity: 1; filter: drop-shadow(0 0 5px rgba(244,243,240,.45)); }
+  .gl.snap { border-style: dashed; border-color: var(--mute); }
+  .gl.snap.on { background: var(--paper); border-color: var(--paper); border-style: solid; color: var(--ink); }
+  .state.s { color: var(--paper); }
+  .dot.snap { background: var(--paper); }
+  .tile.snapm .gi.g { color: var(--paper); }
   .gl { position: absolute; z-index: 6; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 7px;
         padding: 4px 8px 4px 7px; background: var(--ink); border: 1px solid var(--line-3);
         font: 500 9.5px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--paper); white-space: nowrap; cursor: pointer; }
@@ -244,6 +253,7 @@
     <div class="spacer"></div>
     <div class="live"><span class="pulse" id="pulse"></span><span class="cap" id="liveLabel">Live</span></div>
     <div class="switch" id="swAuto" title="When a window that belongs to a group opens, put it in its place"><span class="track"></span><span class="cap">Auto-restore</span></div>
+    <div class="switch" id="swSnap" title="Windows forgets snap groups when it restarts. Keep them as groups, so they come back."><span class="track"></span><span class="cap">Keep snap groups</span></div>
     <div class="switch" id="swStart"><span class="track"></span><span class="cap">Start with Windows</span></div>
   </header>
 
@@ -290,6 +300,13 @@ let hoverGroup = null;              // group row under the mouse: lit up on the 
 // Grouped: two stacked frames, the front one filled. Not grouped: one dashed frame.
 const ICON_GROUPED = '<svg class="ico" viewBox="0 0 12 12" aria-hidden="true"><path d="M3.5 3V.5h8v8H9" fill="none" stroke="currentColor"/><rect x=".5" y="3.5" width="8" height="8" fill="currentColor" fill-opacity=".22" stroke="currentColor"/></svg>';
 const ICON_LOOSE = '<svg class="ico" viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" fill="none" stroke="currentColor" stroke-dasharray="2 1.6"/></svg>';
+
+// Windows in a snap group that Windows made (2+ snapped windows on one screen), by handle.
+function snapGroups() {
+  const m = new Map();
+  for (const d of (S.detectedAll || [])) if ((d.snap || []).length >= 2) for (const h of d.snap) m.set(h, d);
+  return m;
+}
 
 // Which saved groups each open window belongs to.
 function membership() {
@@ -384,6 +401,7 @@ function render() {
   $("#ver").textContent = S.version;
   $("#swAuto").classList.toggle("on", S.settings.autoRestore);
   $("#swStart").classList.toggle("on", S.settings.startWithWindows);
+  $("#swSnap").classList.toggle("on", !!S.settings.keepSnaps);
   $("#pulse").classList.toggle("off", !S.settings.autoRestore);
   $("#liveLabel").textContent = S.settings.autoRestore ? "Watching" : "Paused";
   document.querySelectorAll("#scope button").forEach(b => b.classList.toggle("on", b.dataset.s === scope));
@@ -408,7 +426,7 @@ function renderGroups() {
       return '<div class="row' + (sel ? " sel" : "") + '" data-id="' + esc(g.id) + '">' +
         '<div class="tick' + (ticked.has(g.id) ? " on" : "") + '" data-tick="' + esc(g.id) + '"></div>' +
         '<div style="min-width:0"><div class="name">' + esc(g.name) + '</div>' +
-        '<div class="meta"><b>' + o + '</b>/' + n + ' open' + (g.auto ? ' &middot; auto' : '') + '</div></div>' +
+        '<div class="meta"><b>' + o + '</b>/' + n + ' open' + (g.auto ? ' &middot; auto' : '') + (g.snap ? ' &middot; snap' : '') + '</div></div>' +
         '<div class="dot ' + cls + '"></div></div>';
     }).join(""));
   }
@@ -430,16 +448,19 @@ function renderDetected() {
   setHTML(el, ds.map(d => {
     const sel = view.kind === "detected" && view.mon === d.mon;
     const k = d.handles.filter(h => mem.has(h)).length, all = d.handles.length;
-    const st = d.savedAs || k === all ? "g" : k > 0 ? "p" : "u";
-    const said = d.savedAs ? 'Grouped &middot; <b>' + esc(d.savedAs) + '</b>'
-               : k === all ? 'Grouped' : k > 0 ? k + ' of ' + all + ' grouped' : 'Not grouped - just placed';
+    const sn = (d.snap || []).length, snapAll = sn >= 2 && sn === all;
+    const st = d.savedAs || k === all ? "g" : sn >= 2 ? "s" : k > 0 ? "p" : "u";
+    const said = d.savedAs ? 'Grouped &middot; <b>' + esc(d.savedAs) + '</b>' + (snapAll ? ' &middot; snapped' : '')
+               : k === all ? 'Grouped'
+               : sn >= 2 ? 'Snap group' + (sn < all ? ' (' + sn + ' of ' + all + ')' : '') + ' &middot; ' + (S.settings.keepSnaps ? 'keeping it' : 'not kept')
+               : k > 0 ? k + ' of ' + all + ' grouped' : 'Not grouped - just placed';
     return '<div class="row' + (sel ? " sel" : "") + '" data-mon="' + d.mon + '">' +
       '<div class="state ' + st + '">' + (st === "u" ? ICON_LOOSE : ICON_GROUPED) + '</div>' +
       '<div style="min-width:0"><div class="name">' + esc(d.monName) + '</div>' +
       '<div class="meta">' + plural(all, "window") + ' &middot; ' + (d.tiled ? "tiled" : "loose") +
       (d.behind ? ' &middot; +' + d.behind + ' behind' : '') + '</div>' +
-      '<div class="meta" style="color:' + (st === "g" ? "var(--paper)" : st === "p" ? "var(--amber)" : "var(--mute-2)") + '">' + said + '</div></div>' +
-      '<div class="dot' + (st === "g" ? " all" : st === "p" ? " some" : "") + '"></div></div>';
+      '<div class="meta" style="color:' + (st === "g" || st === "s" ? "var(--paper)" : st === "p" ? "var(--amber)" : "var(--mute-2)") + '">' + said + '</div></div>' +
+      '<div class="dot' + (st === "g" ? " all" : st === "s" ? " snap" : st === "p" ? " some" : "") + '"></div></div>';
   }).join(""));
 }
 
@@ -476,7 +497,26 @@ function groupLayers(g, active, dimOthers) {
     }
     for (const r of firsts.values())
       labels += '<span class="gl ' + cls + '" data-gsel="' + esc(gr.id) + '" title="Open this group" style="left:' + (r.l + 10).toFixed(1) + 'px;top:' + r.t.toFixed(1) + 'px">' +
-                ICON_GROUPED + esc(gr.name) + ' <i>' + gr.open + '/' + gr.slots.length + '</i></span>';
+                ICON_GROUPED + esc(gr.name) + ' <i>' + gr.open + '/' + gr.slots.length + (gr.snap ? ' &middot; snap' : '') + '</i></span>';
+  }
+  // Snap groups Windows made that are not a saved group (yet): dashed, in paper, named for it.
+  const mem = membership();
+  for (const d of (S.detectedAll || [])) {
+    const hs = d.snap || [];
+    if (hs.length < 2 || hs.every(h => mem.has(h))) continue;
+    const rects = [];
+    for (const h of hs) {
+      const w = winByH(h);
+      if (w && (scope === "all" || w.claude)) rects.push({ mon: w.mon, l: g.X(w.vx) - pad, t: g.Y(w.vy) - pad, r: g.X(w.vx + w.vw) + pad, b: g.Y(w.vy + w.vh) + pad });
+    }
+    if (rects.length < 2) continue;
+    const on = view.kind === "detected" && view.mon === d.mon;
+    const cls = "snapl" + (on ? " on" : "") + (dimOthers ? " dim" : "");
+    const u = unionOutline(rects);
+    paths += '<g class="' + cls + '"><path class="lf" d="' + u.fill + '"/><path class="le" d="' + u.edges + '"/></g>';
+    const r = rects.slice().sort((a, b) => (a.t - b.t) || (a.l - b.l))[0];
+    labels += '<span class="gl snap' + (on ? " on" : "") + (dimOthers ? " dim" : "") + '" data-dsel="' + d.mon + '" title="A snap group made in Windows" style="left:' + (r.l + 10).toFixed(1) + 'px;top:' + r.t.toFixed(1) + 'px">' +
+              ICON_GROUPED + 'Snap group <i>' + esc(d.monName) + (S.settings.keepSnaps ? ' &middot; keeping' : '') + '</i></span>';
   }
   return { html: paths ? '<svg class="layers">' + paths + '</svg>' : "", labels };
 }
@@ -536,7 +576,7 @@ function tileHtml(cls, g, x, y, w, h, title, sub, attrs, n, mark) {
 
 function renderLegend() {
   setHTML($("#lgG"), ICON_GROUPED + "Grouped");
-  setHTML($("#lgU"), ICON_LOOSE + "Not grouped");
+  setHTML($("#lgU"), ICON_LOOSE + "Not grouped - just placed");
 }
 
 function renderStage() {
@@ -557,6 +597,7 @@ function renderStage() {
 
   const wins = winsInScope().filter(w => !w.min).sort((a, b) => b.z - a.z);   // bottom of the stack drawn first
   const mem = membership();
+  const snaps = snapGroups();
   const names = h => esc((mem.get(h) || []).map(x => x.name).join(" / "));
 
   // Which group is lit: the one selected, the one whose screen is selected, the one hovered.
@@ -573,19 +614,19 @@ function renderStage() {
 
   if (view.kind === "live") {
     for (const w of wins) {
-      const on = picked.has(w.h), gs = mem.get(w.h);
+      const on = picked.has(w.h), gs = mem.get(w.h), sd = !gs && snaps.get(w.h);
       const lit = gs && gs.some(x => active.has(x.id));
-      const sub = on ? "picked" : gs ? names(w.h) : (w.max ? "maximized &middot; not grouped" : "not grouped");
-      html += tileHtml("pick" + (on ? " on" : "") + (lit ? " hl" : "") + (gs ? "" : " loose"), g, w.vx, w.vy, w.vw, w.vh, w.title, sub,
-                       'data-pick="' + w.h + '"', null, gs ? "g" : "u");
+      const sub = on ? "picked" : gs ? names(w.h) : sd ? "snap group" : (w.max ? "maximized &middot; not grouped" : "not grouped");
+      html += tileHtml("pick" + (on ? " on" : "") + (lit ? " hl" : "") + (gs || sd ? "" : " loose") + (sd ? " snapm" : ""), g, w.vx, w.vy, w.vw, w.vh, w.title, sub,
+                       'data-pick="' + w.h + '"', null, gs || sd ? "g" : "u");
     }
   } else if (view.kind === "detected") {
     const d = detectedInScope().find(x => x.mon === view.mon);
     const set = new Set(d ? d.handles : []);
     for (const w of wins) {
-      const gs = mem.get(w.h);
-      if (set.has(w.h)) html += tileHtml("on" + (gs ? "" : " loose"), g, w.vx, w.vy, w.vw, w.vh, w.title, gs ? names(w.h) : "not grouped", "", null, gs ? "g" : "u");
-      else html += tileHtml("ghost", g, w.vx, w.vy, w.vw, w.vh, w.title, "", "", null, gs ? "g" : "u");
+      const gs = mem.get(w.h), sd = !gs && snaps.get(w.h);
+      if (set.has(w.h)) html += tileHtml("on" + (gs || sd ? "" : " loose") + (sd ? " snapm" : ""), g, w.vx, w.vy, w.vw, w.vh, w.title, gs ? names(w.h) : sd ? "snap group" : "not grouped", "", null, gs || sd ? "g" : "u");
+      else html += tileHtml("ghost", g, w.vx, w.vy, w.vw, w.vh, w.title, "", "", null, gs || sd ? "g" : "u");
     }
   } else if (view.kind === "group") {
     const gr = S.groups.find(x => x.id === view.id);
@@ -637,6 +678,11 @@ function renderDetail() {
       (d.savedAs ? ' &middot; already saved as <b>' + esc(d.savedAs) + '</b>' : '') + '</div></div>' +
       '<div class="actions"><button class="btn primary" id="saveDetected">' + (d.savedAs ? "Save again" : "Save as group") + '</button>' +
       '<button class="btn" id="showDetected">Show on screen</button></div></div>' +
+      ((d.snap || []).length >= 2 && !d.savedAs
+        ? '<p class="hint" style="margin-top:14px"><b>Windows made this a snap group.</b> Windows forgets snap groups every time it restarts. ' +
+          (S.settings.keepSnaps ? 'Window Groups keeps it for you once it has held still for a few seconds - it will appear under Saved groups as <b>' + esc(d.monName) + '</b>.'
+                                : 'Save it here and it comes back after a restart.') + '</p>'
+        : '') +
       '<div class="slots">' + d.handles.map((h, i) => {
         const w = winByH(h) || {};
         return '<div class="slot"><span class="ix">' + String(i + 1).padStart(2, "0") + '</span><span class="name">' + esc(w.title) + '</span>' +
@@ -716,10 +762,13 @@ $("#scope").addEventListener("click", e => {
 
 $("#swAuto").addEventListener("click", () => run("setting", { key: "autoRestore", value: !S.settings.autoRestore }));
 $("#swStart").addEventListener("click", () => run("setting", { key: "startWithWindows", value: !S.settings.startWithWindows }));
+$("#swSnap").addEventListener("click", () => run("setting", { key: "keepSnaps", value: !S.settings.keepSnaps }));
 
 $("#canvas").addEventListener("click", e => {
   const gl = e.target.closest("[data-gsel]");
   if (gl) { view = { kind: "group", id: gl.getAttribute("data-gsel") }; closePop(); render(); return; }
+  const dl = e.target.closest("[data-dsel]");
+  if (dl) { view = { kind: "detected", mon: +dl.getAttribute("data-dsel") }; closePop(); render(); return; }
   const p = e.target.closest("[data-pick]");
   if (p) { const h = p.getAttribute("data-pick"); picked.has(h) ? picked.delete(h) : picked.add(h); render(); return; }
   const m = e.target.closest("[data-miss]");

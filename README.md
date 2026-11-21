@@ -18,6 +18,15 @@ other app's windows too.
 - **Detects layouts.** Every screen with two or more windows on it shows up under *On screen
   now*, named by where the screen sits ("Top left", "Main", "Far right"). Only what you can
   actually see counts - a window hidden behind others is left out. One click saves it.
+- **Recognises the snap groups you make in Windows - and keeps them.** Windows 11 groups
+  windows you snap with Snap Layouts, then forgets every one of those groups when it restarts.
+  Window Groups sees which windows are snapped (`IsWindowArranged`, the one signal Windows
+  gives), treats two or more snapped windows on a screen as the snap group they are, and once it
+  has held still for a few seconds keeps it as a group named after its screen - so it comes back
+  after a reboot. A kept snap group follows its layout as you resize it; rename or edit it and it
+  becomes an ordinary group that is left alone; delete it and it is not kept again unless it
+  changes. A group you saved yourself is never duplicated. Switch *Keep snap groups* off to only
+  ever save by hand.
 - **Shows what is grouped and what is just placed.** Every saved group gets a layer on the map -
   a frame that follows its windows exactly, with the group's name on it - and every window
   carries an icon: two stacked frames for grouped, one dashed frame for not grouped. A window

@@ -38,8 +38,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Save window layouts. Bring them back.")]
 [assembly: AssemblyProduct("Window Groups")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
 
 namespace WindowGroups
 {
@@ -78,6 +78,17 @@ namespace WindowGroups
         [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int val, int size);
         [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT val, int size);
         [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
+        [DllImport("user32.dll", EntryPoint = "IsWindowArranged")] static extern bool IsWindowArrangedRaw(IntPtr h);
+
+        // Is this window snapped? The one documented signal Windows gives about Snap Layouts.
+        // Snap GROUPS themselves - which snapped windows belong together - are not exposed at all.
+        static bool noArranged;
+        public static bool IsArranged(IntPtr h)
+        {
+            if (noArranged) return false;
+            try { return IsWindowArrangedRaw(h); }
+            catch (EntryPointNotFoundException) { noArranged = true; return false; }
+        }
 
         public const int SW_RESTORE = 9, SW_MAXIMIZE = 3;
         public const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10;
@@ -92,6 +103,7 @@ namespace WindowGroups
         public int X, Y, W, H;          // GetWindowRect - what SetWindowPos takes back
         public int VX, VY, VW, VH;      // DWM frame - what you actually see
         public bool Min, Max; public int Z; public int Mon = -1;
+        public bool Snapped;            // arranged by Windows Snap Layouts, as opposed to just placed
         public bool IsClaude { get { return string.Equals(Process, "claude", StringComparison.OrdinalIgnoreCase); } }
     }
 
@@ -208,6 +220,7 @@ namespace WindowGroups
                 var w = new Win();
                 w.Handle = h.ToInt64(); w.Title = title; w.Process = pn; w.Class = c;
                 w.Min = N.IsIconic(h); w.Max = N.IsZoomed(h); w.Z = z++;
+                w.Snapped = !w.Min && !w.Max && N.IsArranged(h);
                 N.RECT r;
                 if (w.Min)
                 {
@@ -369,6 +382,9 @@ namespace WindowGroups
     class Group
     {
         public string Id; public string Name; public bool Auto = true; public string Saved;
+        // Kept automatically from a Windows snap group on this screen, and kept in step with it.
+        // Any hand edit (rename, swap, remove) makes it an ordinary group that is left alone.
+        public bool Snap; public string SnapScreen;
         public List<Slot> Slots = new List<Slot>();
     }
 
@@ -376,7 +392,10 @@ namespace WindowGroups
     {
         public int Version = 2;
         public bool AutoRestore = true;
+        public bool KeepSnaps = true;
         public List<Group> Groups = new List<Group>();
+        // Snap groups the user deleted after they were kept: not kept again unless they change.
+        public List<string> Dismissed = new List<string>();
     }
 
     static class Store
@@ -396,6 +415,7 @@ namespace WindowGroups
                     var d = new JavaScriptSerializer().Deserialize<Data>(File.ReadAllText(FilePath, Encoding.UTF8));
                     D = d ?? new Data();
                     if (D.Groups == null) D.Groups = new List<Group>();
+                    if (D.Dismissed == null) D.Dismissed = new List<string>();
                     foreach (var g in D.Groups) if (g.Slots == null) g.Slots = new List<Slot>();
                 }
                 catch (Exception e)
@@ -531,7 +551,11 @@ namespace WindowGroups
             return r;
         }
 
-        public class Detected { public int Mon; public string MonName; public bool Tiled; public double Coverage; public List<Win> Windows; public int Behind; }
+        public class Detected
+        {
+            public int Mon; public string MonName; public bool Tiled; public double Coverage; public List<Win> Windows; public int Behind;
+            public List<Win> Snap = new List<Win>();     // the visible windows Windows has snapped - 2+ is a snap group
+        }
 
         // What is arranged on each screen right now - meaning what you can SEE. Windows are walked
         // from the top of the stack down, and one that is mostly hidden behind windows already
@@ -571,6 +595,8 @@ namespace WindowGroups
                 d.Tiled = sum > 0 && overlap / sum < 0.12 && d.Coverage > 0.55;
                 d.Windows = ws.OrderBy(w => w.VY / 200).ThenBy(w => w.VX).ToList();
                 d.Behind = behind;
+                var snapped = d.Windows.Where(w => w.Snapped).ToList();
+                if (snapped.Count >= 2) d.Snap = snapped;
                 res.Add(d);
             }
             return res;
@@ -605,8 +631,92 @@ namespace WindowGroups
     // Puts a window into its saved slot the first time it appears - not continuously, so moving
     // a window by hand afterwards is never fought. A new window is given a couple of seconds
     // first: the owning app positions it itself on creation, and its title often arrives late.
+    // Windows forgets every snap group when it restarts. This keeps them: a snap group that has
+    // held still for a few seconds is saved as a group named after its screen, and follows the
+    // snap layout on that screen as it changes. A saved group that already holds exactly those
+    // windows - one the user made - is never duplicated and never touched.
+    class SnapKeeper
+    {
+        readonly Dictionary<int, KeyValuePair<string, DateTime>> seen = new Dictionary<int, KeyValuePair<string, DateTime>>();
+
+        public static string Signature(IEnumerable<Slot> slots)
+        {
+            return string.Join("|", slots.Select(x => !string.IsNullOrEmpty(x.SessionId) ? x.SessionId : (x.Process + ":" + x.Title)).OrderBy(x => x));
+        }
+
+        public void Tick(List<Win> open, List<Mon> mons)
+        {
+            lock (Store.Gate) if (!Store.D.KeepSnaps) { seen.Clear(); return; }
+            var now = DateTime.Now;
+            var live = new HashSet<int>();
+            foreach (var d in Layouts.Detect(open, mons, false))
+            {
+                if (d.Snap.Count < 2) continue;
+                live.Add(d.Mon);
+                var slots = Layouts.Snapshot(d.Snap);
+                string sig = Signature(slots) + "@" + string.Join(",", slots.OrderBy(x => x.X).ThenBy(x => x.Y).Select(x => x.X + ":" + x.Y + ":" + x.W + ":" + x.H));
+                KeyValuePair<string, DateTime> prev;
+                if (!seen.TryGetValue(d.Mon, out prev) || prev.Key != sig) { seen[d.Mon] = new KeyValuePair<string, DateTime>(sig, now); continue; }
+                if ((now - prev.Value).TotalSeconds < 6) continue;
+                Keep(d, slots, open, mons);
+            }
+            foreach (var m in seen.Keys.Where(k => !live.Contains(k)).ToList()) seen.Remove(m);
+        }
+
+        void Keep(Layouts.Detected d, List<Slot> slots, List<Win> open, List<Mon> mons)
+        {
+            var handles = new HashSet<long>(d.Snap.Select(w => w.Handle));
+            string members = Signature(slots);
+            lock (Store.Gate)
+            {
+                var titles = Claude.Titles();
+                foreach (var g in Store.D.Groups)
+                {
+                    var set = new HashSet<long>(Layouts.Resolve(g, open, titles, mons).Where(x => x.Window != null).Select(x => x.Window.Handle));
+                    if (!set.SetEquals(handles)) continue;
+                    // Already kept. A kept snap group follows a resized layout; a user's group does not.
+                    if (g.Snap && Moved(g.Slots, slots))
+                    {
+                        g.Slots = slots; g.Saved = DateTime.Now.ToString("dd MMM HH:mm"); Store.Save();
+                        Log.Write("snap: '" + g.Name + "' layout changed - kept");
+                    }
+                    return;
+                }
+                if (Store.D.Dismissed.Contains(members)) return;
+                var mine = Store.D.Groups.FirstOrDefault(g => g.Snap && g.SnapScreen == d.MonName);
+                if (mine != null)
+                {
+                    mine.Slots = slots; mine.Saved = DateTime.Now.ToString("dd MMM HH:mm");
+                    Log.Write("snap: the snap group on " + d.MonName + " changed - '" + mine.Name + "' follows it");
+                }
+                else
+                {
+                    string name = d.MonName;
+                    if (Store.D.Groups.Any(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase))) name = d.MonName + " snap";
+                    Store.D.Groups.Add(new Group { Id = Store.NewId(), Name = name, Snap = true, SnapScreen = d.MonName, Auto = true,
+                                                   Slots = slots, Saved = DateTime.Now.ToString("dd MMM HH:mm") });
+                    Log.Write("snap: kept the snap group on " + d.MonName + " as '" + name + "' (" + slots.Count + " windows)");
+                }
+                Store.Save();
+            }
+        }
+
+        static bool Moved(List<Slot> a, List<Slot> b)
+        {
+            if (a.Count != b.Count) return true;
+            foreach (var x in b)
+            {
+                var y = a.FirstOrDefault(s => (s.SessionId ?? s.Title) == (x.SessionId ?? x.Title));
+                if (y == null || Math.Abs(y.X - x.X) > 4 || Math.Abs(y.Y - x.Y) > 4 || Math.Abs(y.W - x.W) > 4 || Math.Abs(y.H - x.H) > 4) return true;
+            }
+            return false;
+        }
+    }
+
     class AutoRestore
     {
+        readonly SnapKeeper keeper = new SnapKeeper();
+        int ticks;
         readonly HashSet<long> done = new HashSet<long>();
         readonly Dictionary<long, DateTime> pending = new Dictionary<long, DateTime>();
 
@@ -640,11 +750,16 @@ namespace WindowGroups
                     // later does not suddenly yank every window across the screens.
                     foreach (var w in open) done.Add(w.Handle);
                     pending.Clear();
-                    return;
+                    groups = new List<Group>();
                 }
-                groups = Store.D.Groups.Where(g => g.Auto && g.Slots.Count > 0).ToList();
+                else groups = Store.D.Groups.Where(g => g.Auto && g.Slots.Count > 0).ToList();
             }
-            if (groups.Count == 0) { foreach (var w in open) done.Add(w.Handle); return; }
+            if (groups.Count == 0)
+            {
+                foreach (var w in open) done.Add(w.Handle);
+                if (++ticks % 3 == 0) { try { keeper.Tick(open, mons); } catch (Exception e) { Log.Write("snap: " + e.Message); } }
+                return;
+            }
 
             var titles = Claude.Titles();
             var touched = new HashSet<Group>();
@@ -680,6 +795,9 @@ namespace WindowGroups
                     done.Add(w.Handle); pending.Remove(w.Handle);       // never matched: not ours
                 }
             }
+
+            // Every third tick: is there a snap group worth keeping?
+            if (++ticks % 3 == 0) { try { keeper.Tick(open, mons); } catch (Exception e) { Log.Write("snap: " + e.Message); } }
 
             // Restore the stacking of every group that just received a window.
             foreach (var g in touched)
@@ -1040,7 +1158,7 @@ namespace WindowGroups
                 { "h", w.Handle.ToString() }, { "title", w.Title }, { "process", w.Process }, { "claude", w.IsClaude },
                 { "x", w.X }, { "y", w.Y }, { "w", w.W }, { "h2", w.H },
                 { "vx", w.VX }, { "vy", w.VY }, { "vw", w.VW }, { "vh", w.VH },
-                { "min", w.Min }, { "max", w.Max }, { "z", w.Z }, { "mon", w.Mon } }).ToList();
+                { "min", w.Min }, { "max", w.Max }, { "z", w.Z }, { "mon", w.Mon }, { "snapped", w.Snapped } }).ToList();
 
             var groups = new List<object>();
             var savedSets = new List<KeyValuePair<string, HashSet<long>>>();
@@ -1052,7 +1170,7 @@ namespace WindowGroups
                     savedSets.Add(new KeyValuePair<string, HashSet<long>>(g.Name,
                         new HashSet<long>(states.Where(s => s.Window != null).Select(s => s.Window.Handle))));
                     groups.Add(new Dictionary<string, object> {
-                        { "id", g.Id }, { "name", g.Name }, { "auto", g.Auto }, { "saved", g.Saved },
+                        { "id", g.Id }, { "name", g.Name }, { "auto", g.Auto }, { "saved", g.Saved }, { "snap", g.Snap },
                         { "open", states.Count(s => s.Window != null) },
                         { "slots", states.Select(s => (object)new Dictionary<string, object> {
                             { "i", s.Index }, { "title", s.Title }, { "savedTitle", s.Slot.Title }, { "sessionId", s.Slot.SessionId },
@@ -1060,7 +1178,7 @@ namespace WindowGroups
                             { "x", s.Slot.X }, { "y", s.Slot.Y }, { "w", s.Slot.W }, { "h2", s.Slot.H }, { "max", s.Slot.Max }, { "z", s.Slot.Z },
                             { "mon", s.Mon }, { "open", s.Window != null }, { "h", s.Window != null ? s.Window.Handle.ToString() : null } }).ToList() } });
                 }
-                res["settings"] = new Dictionary<string, object> { { "autoRestore", Store.D.AutoRestore }, { "startWithWindows", Startup.On } };
+                res["settings"] = new Dictionary<string, object> { { "autoRestore", Store.D.AutoRestore }, { "startWithWindows", Startup.On }, { "keepSnaps", Store.D.KeepSnaps } };
             }
             res["groups"] = groups;
 
@@ -1070,13 +1188,14 @@ namespace WindowGroups
                 var match = savedSets.FirstOrDefault(kv => kv.Value.SetEquals(set));
                 return (object)new Dictionary<string, object> {
                     { "mon", d.Mon }, { "monName", d.MonName }, { "tiled", d.Tiled }, { "coverage", Math.Round(d.Coverage, 2) }, { "behind", d.Behind },
+                    { "snap", d.Snap.Select(w => (object)w.Handle.ToString()).ToList() },
                     { "handles", d.Windows.Select(w => (object)w.Handle.ToString()).ToList() },
                     { "savedAs", match.Key } };
             }).ToList();
             res["detected"] = detected(true);
             res["detectedAll"] = detected(false);
             res["claudeFound"] = wins.Any(w => w.IsClaude) || titles.Count > 0;
-            res["version"] = "1.1.0";
+            res["version"] = "1.2.0";
             return res;
         }
 
@@ -1165,7 +1284,7 @@ namespace WindowGroups
                         if (g == null) return Fail(404, "No such group.");
                         if (Store.D.Groups.Any(x => x != g && string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase)))
                             return Fail(409, "Another group is already called " + name + ".");
-                        g.Name = name; Store.Save();
+                        g.Name = name; g.Snap = false; Store.Save();
                         return Ok("Renamed to " + name + ".");
                     }
                 }
@@ -1175,9 +1294,15 @@ namespace WindowGroups
                     {
                         var g = Store.Find(S(b, "id"));
                         if (g == null) return Fail(404, "No such group.");
-                        Store.D.Groups.Remove(g); Store.Save();
+                        Store.D.Groups.Remove(g);
+                        if (g.Snap)
+                        {
+                            Store.D.Dismissed.Add(SnapKeeper.Signature(g.Slots));
+                            if (Store.D.Dismissed.Count > 60) Store.D.Dismissed.RemoveAt(0);
+                        }
+                        Store.Save();
                         Log.Write("deleted '" + g.Name + "'");
-                        return Ok("Deleted " + g.Name + ". The windows themselves were not touched.");
+                        return Ok("Deleted " + g.Name + "." + (g.Snap ? " That snap group will not be kept again unless it changes." : " The windows themselves were not touched."));
                     }
                 }
                 case "auto":
@@ -1205,7 +1330,7 @@ namespace WindowGroups
                         var snap = Layouts.Snapshot(new[] { w })[0];
                         var s = g.Slots[i];
                         s.Title = snap.Title; s.SessionId = snap.SessionId; s.Process = snap.Process;
-                        g.Saved = DateTime.Now.ToString("dd MMM HH:mm");
+                        g.Saved = DateTime.Now.ToString("dd MMM HH:mm"); g.Snap = false;
                         Store.Save();
                         Log.Write("slot " + i + " of '" + g.Name + "' now holds '" + w.Title + "'");
                         return Ok(UiFont.Plain(w.Title) + " now holds that place in " + g.Name + ".");
@@ -1219,7 +1344,7 @@ namespace WindowGroups
                         int i = I(b, "index");
                         if (g == null || i < 0 || i >= g.Slots.Count) return Fail(404, "No such slot.");
                         string t = g.Slots[i].Title;
-                        g.Slots.RemoveAt(i); Store.Save();
+                        g.Slots.RemoveAt(i); g.Snap = false; Store.Save();
                         return Ok("Removed " + UiFont.Plain(t) + " from " + g.Name + ".");
                     }
                 }
@@ -1255,6 +1380,7 @@ namespace WindowGroups
                     bool on = B(b, "value");
                     if (key == "autoRestore") { lock (Store.Gate) { Store.D.AutoRestore = on; Store.Save(); } return Ok(on ? "Groups will put themselves back as their windows open." : "Auto-restore is off. Deploy groups by hand."); }
                     if (key == "startWithWindows") { Startup.Set(on); return Ok(on ? "Window Groups starts with Windows." : "Window Groups no longer starts with Windows."); }
+                    if (key == "keepSnaps") { lock (Store.Gate) { Store.D.KeepSnaps = on; Store.Save(); } return Ok(on ? "Snap groups you make in Windows are kept, and come back after a restart." : "Snap groups are no longer kept automatically."); }
                     return Fail(400, "Unknown setting.");
                 }
                 default:
@@ -1381,6 +1507,11 @@ namespace WindowGroups
             var autoItem = new ToolStripMenuItem("Put groups back when windows open") { Checked = auto };
             autoItem.Click += delegate { lock (Store.Gate) { Store.D.AutoRestore = !Store.D.AutoRestore; Store.Save(); } };
             menu.Items.Add(autoItem);
+            bool keep;
+            lock (Store.Gate) keep = Store.D.KeepSnaps;
+            var keepItem = new ToolStripMenuItem("Keep snap groups made in Windows") { Checked = keep };
+            keepItem.Click += delegate { lock (Store.Gate) { Store.D.KeepSnaps = !Store.D.KeepSnaps; Store.Save(); } };
+            menu.Items.Add(keepItem);
             var start = new ToolStripMenuItem("Start with Windows") { Checked = Startup.On };
             start.Click += delegate { Startup.Set(!Startup.On); };
             menu.Items.Add(start);
