@@ -822,8 +822,12 @@ function renderStage() {
     let tiles = "";
     const here = wins.filter(w => w.mon === m.i).sort((a, b) => b.z - a.z);     // bottom of the stack first
     if (view.kind === "live") {
-      // A lit group is drawn on top, so a group stacked behind another shows while you point at it.
-      const order = here.filter(w => !litWin.has(w.h)).concat(here.filter(w => litWin.has(w.h)));
+      // Drawn in stack order, except: windows the filter or search picks out come in front of the
+      // rest (an ungrouped window hidden behind a group must still show under "Not grouped"), and
+      // a lit group on top of everything, so a group stacked behind another shows while you point at it.
+      const sifting = filter !== "all" || !!query;
+      const rank = w => litWin.has(w.h) ? 2 : (picked.has(w.h) || (sifting && passes(w, statusOf(w, mem, snaps)))) ? 1 : 0;
+      const order = here.map((w, i) => [w, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
       for (const w of order) {
         const st = statusOf(w, mem, snaps), on = picked.has(w.h);
         const out = !on && !passes(w, st);
