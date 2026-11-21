@@ -1,0 +1,29 @@
+@echo off
+REM Builds dist/WindowGroups.exe with the C# compiler that ships with Windows (.NET Framework 4).
+REM Nothing to install. The UI page is embedded into the exe, so the exe is the whole program.
+setlocal
+cd /d "%~dp0"
+
+set "CSC=%WINDIR%/Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+if not exist "%CSC%" set "CSC=%WINDIR%/Microsoft.NET/Framework/v4.0.30319/csc.exe"
+if not exist "%CSC%" (
+  echo Could not find the .NET Framework 4 C# compiler. It ships with Windows 10 and 11.
+  exit /b 1
+)
+
+if not exist "assets/app.ico" powershell -NoProfile -ExecutionPolicy Bypass -File "tools/make-icon.ps1"
+if not exist dist mkdir dist
+
+"%CSC%" /nologo /target:winexe /optimize+ /platform:anycpu ^
+  /out:dist\WindowGroups.exe ^
+  /win32icon:assets\app.ico ^
+  /resource:src\ui\index.html,WindowGroups.index.html ^
+  /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll ^
+  src\WindowGroups.cs
+if errorlevel 1 (
+  echo.
+  echo Build failed.
+  exit /b 1
+)
+echo Built dist/WindowGroups.exe
+endlocal

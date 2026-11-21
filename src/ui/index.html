@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Window Groups</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 fill=%27%230a0a0a%27/%3E%3Crect x=%272%27 y=%272%27 width=%275%27 height=%275%27 fill=%27%2325f716%27/%3E%3Crect x=%279%27 y=%272%27 width=%275%27 height=%275%27 fill=%27%23f4f3f0%27/%3E%3Crect x=%272%27 y=%279%27 width=%275%27 height=%275%27 fill=%27%23f4f3f0%27/%3E%3Crect x=%279%27 y=%279%27 width=%275%27 height=%275%27 fill=%27%23f4f3f0%27/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0a0a0a;
+    --ink-2: #0f0f10;
+    --ink-3: #141517;
+    --ink-4: #1b1b1e;
+    --line: #1f1f22;
+    --line-2: #2a2a2e;
+    --line-3: #3a3a3f;
+    --paper: #f4f3f0;
+    --mute: #a09f9a;
+    --mute-2: #6f6e6a;
+    --mute-3: #4a4946;
+    --signal: #25f716;
+    --signal-dim: rgba(37, 247, 22, .07);
+    --amber: #e8aa48;
+    --font: "Geist", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+    --mono: "Geist Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--ink); color: var(--paper); font: 400 14px/1.45 var(--font);
+    -webkit-font-smoothing: antialiased; overflow: hidden; user-select: none;
+  }
+  button, input, select { font: inherit; color: inherit; }
+  ::selection { background: var(--signal); color: var(--ink); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--line-2); border: 3px solid var(--ink); border-radius: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  .mono { font-family: var(--mono); }
+  .cap { font: 500 10.5px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--mute-2); }
+
+  /* ---------- frame */
+  .app { display: grid; grid-template-rows: 58px 1fr; height: 100%; }
+  header {
+    display: flex; align-items: center; gap: 22px; padding: 0 22px;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .mark { display: grid; grid-template-columns: 7px 7px; gap: 2px; }
+  .mark i { width: 7px; height: 7px; background: var(--paper); display: block; }
+  .mark i:first-child { background: var(--signal); }
+  .wordmark { font: 500 12px/1 var(--mono); letter-spacing: .26em; }
+  .spacer { flex: 1; }
+  .live { display: flex; align-items: center; gap: 8px; }
+  .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 0 0 rgba(37,247,22,.5); animation: pulse 2.4s infinite; }
+  .pulse.off { background: var(--mute-3); animation: none; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(37,247,22,.45); } 70% { box-shadow: 0 0 0 7px rgba(37,247,22,0); } 100% { box-shadow: 0 0 0 0 rgba(37,247,22,0); } }
+
+  .switch { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  .switch .track { width: 28px; height: 16px; border: 1px solid var(--line-3); border-radius: 16px; position: relative; transition: .2s; }
+  .switch .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%; background: var(--mute-2); transition: .2s; }
+  .switch.on .track { border-color: var(--signal); }
+  .switch.on .track::after { left: 14px; background: var(--signal); }
+  .switch .cap { color: var(--mute); }
+  .switch.on .cap { color: var(--paper); }
+
+  .body { display: grid; grid-template-columns: 340px 1fr; min-height: 0; }
+
+  /* ---------- side */
+  aside { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  .sec { display: flex; align-items: center; justify-content: space-between; padding: 20px 22px 10px; }
+  .sec .n { color: var(--mute-3); }
+  .list { overflow: auto; }
+  .groups { flex: 1 1 auto; min-height: 120px; }
+  .row {
+    position: relative; display: grid; grid-template-columns: 18px 1fr auto; gap: 14px; align-items: center;
+    padding: 13px 22px; cursor: pointer; border-top: 1px solid var(--line); transition: background .15s;
+  }
+  .row:last-child { border-bottom: 1px solid var(--line); }
+  .row:hover { background: var(--ink-2); }
+  .row.sel { background: var(--ink-3); }
+  .row.sel::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--signal); }
+  .name { font-weight: 500; font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { font: 400 10.5px/1.6 var(--mono); letter-spacing: .08em; color: var(--mute); text-transform: uppercase; }
+  .meta b { font-weight: 500; color: var(--paper); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--mute-3); }
+  .dot.all { background: var(--signal); }
+  .dot.some { background: var(--amber); }
+
+  .tick { width: 16px; height: 16px; border: 1px solid var(--line-3); display: grid; place-items: center; transition: .15s; }
+  .tick:hover { border-color: var(--mute); }
+  .tick.on { background: var(--signal); border-color: var(--signal); }
+  .tick.on::after { content: ""; width: 8px; height: 4px; border-left: 1.5px solid var(--ink); border-bottom: 1.5px solid var(--ink); transform: translateY(-1px) rotate(-45deg); }
+  .glyph { width: 16px; height: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; }
+  .glyph i { background: var(--mute-3); }
+  .glyph.tiled i { background: var(--mute); }
+
+  .deploybar { padding: 16px 22px 18px; border-top: 1px solid var(--line); }
+  .detected { max-height: 38%; flex: 0 0 auto; }
+  .credit { padding: 14px 22px 18px; border-top: 1px solid var(--line); color: var(--mute-3); }
+
+  /* ---------- buttons */
+  .btn {
+    height: 38px; padding: 0 18px; border: 1px solid var(--line-2); background: transparent; border-radius: 2px;
+    cursor: pointer; font-size: 13px; font-weight: 500; letter-spacing: .01em; transition: border-color .15s, background .15s, color .15s;
+    display: inline-flex; align-items: center; gap: 10px; white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--mute-2); }
+  .btn.primary { background: var(--signal); border-color: var(--signal); color: var(--ink); }
+  .btn.primary:hover { background: #3dff2c; }
+  .btn.ghost { border-color: transparent; color: var(--mute); padding: 0 12px; }
+  .btn.ghost:hover { color: var(--paper); }
+  .btn.danger:hover { color: #ff6b5b; border-color: #5a2a24; }
+  .btn[disabled] { pointer-events: none; background: transparent; border-color: var(--line-2); color: var(--mute-3); }
+  .btn.wide { width: 100%; justify-content: center; }
+  .btn .k { font: 500 10.5px/1 var(--mono); letter-spacing: .1em; opacity: .7; }
+
+  /* ---------- main */
+  main { display: grid; grid-template-rows: auto minmax(260px, 1fr) auto; min-height: 0; }
+  .bar { display: flex; align-items: center; gap: 16px; padding: 16px 26px 0; }
+  .seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 2px; }
+  .seg button { background: none; border: 0; padding: 7px 12px; cursor: pointer; font: 500 10.5px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--mute-2); }
+  .seg button.on { color: var(--ink); background: var(--paper); }
+
+  .stage { position: relative; margin: 14px 26px 0; min-height: 0; }
+  .canvas { position: absolute; inset: 0; }
+  .mon { position: absolute; border: 1px solid var(--line-2); background:
+           radial-gradient(circle at 1px 1px, rgba(244,243,240,.045) 1px, transparent 0) 0 0 / 14px 14px, var(--ink-2); }
+  .mon.dim { opacity: .55; }
+  .ml { position: absolute; z-index: 5; transform: translateY(-50%); padding: 4px 7px; background: var(--ink); border: 1px solid var(--line-2);
+         font: 500 9px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--mute-2); white-space: nowrap; pointer-events: none; }
+  .ml b { color: var(--paper); font-weight: 500; }
+  .ml.dim { opacity: .45; }
+
+  .tile {
+    position: absolute; padding: 8px 9px; overflow: hidden; border: 1px solid var(--line-3);
+    background: var(--ink-3); transition: border-color .15s, background .15s; cursor: default;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .tile .t { font-size: 12px; font-weight: 500; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+  .tile .s { font: 500 9px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--mute-2); }
+  .tile.ghost { border-color: var(--line); background: var(--ink-2); }
+  .tile.ghost .t { color: var(--mute-3); font-weight: 400; }
+  .tile.ghost .s { display: none; }
+  .tile.pick { cursor: pointer; }
+  .tile.pick:hover { border-color: var(--mute-2); }
+  .tile.on { border-color: var(--signal); background: linear-gradient(var(--signal-dim), var(--signal-dim)), var(--ink-3); }
+  .tile.on .s { color: var(--signal); }
+  .tile.missing {
+    border: 1px dashed var(--mute-2); cursor: pointer;
+    background: repeating-linear-gradient(135deg, rgba(244,243,240,.035) 0 6px, transparent 6px 12px), var(--ink-2);
+  }
+  .tile.missing .t { color: var(--mute); }
+  .tile.missing .s { color: var(--amber); }
+  .tile.missing:hover { border-color: var(--amber); }
+  .tile .n { position: absolute; right: 8px; top: 8px; font: 500 9px/1 var(--mono); color: var(--mute-3); }
+  .empty-stage { position: absolute; inset: 0; display: grid; place-items: center; color: var(--mute-2); }
+
+  /* ---------- detail */
+  .detail { border-top: 1px solid var(--line); margin-top: 18px; padding: 20px 26px 22px; max-height: 44vh; overflow: auto; }
+  .dhead { display: flex; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
+  .dtitle { font-weight: 300; font-size: 30px; letter-spacing: -.01em; line-height: 1.05; }
+  .dtitle input { background: transparent; border: 0; border-bottom: 1px solid var(--line-3); outline: none; font-weight: 300; font-size: 30px; width: min(520px, 100%); padding: 0 0 4px; }
+  .dtitle input:focus { border-color: var(--signal); }
+  .dmeta { margin-top: 8px; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-left: auto; }
+  .slots { margin-top: 18px; border-top: 1px solid var(--line); }
+  .slot { display: grid; grid-template-columns: 34px 1fr 150px 120px 170px 34px; gap: 14px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); }
+  .slot .ix { font: 500 10.5px/1 var(--mono); color: var(--mute-3); }
+  .slot .st { font: 500 10px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+  .slot .st.ok { color: var(--signal); }
+  .slot .st.no { color: var(--amber); }
+  .x { width: 28px; height: 28px; border: 0; background: none; color: var(--mute-3); cursor: pointer; border-radius: 2px; }
+  .x:hover { color: var(--paper); background: var(--ink-3); }
+  .hint { color: var(--mute); max-width: 640px; }
+  .hint b { color: var(--paper); font-weight: 500; }
+
+  select.dark {
+    appearance: none; background: var(--ink-2); border: 1px solid var(--line-2); border-radius: 2px; height: 30px; padding: 0 28px 0 10px;
+    font-size: 12px; width: 100%; cursor: pointer;
+    background-image: linear-gradient(45deg, transparent 50%, var(--mute) 50%), linear-gradient(135deg, var(--mute) 50%, transparent 50%);
+    background-position: calc(100% - 14px) 13px, calc(100% - 10px) 13px; background-size: 4px 4px; background-repeat: no-repeat;
+  }
+  select.dark:hover { border-color: var(--mute-2); }
+
+  /* ---------- popover, modal, toast */
+  .pop { position: fixed; z-index: 20; width: 320px; max-height: 360px; overflow: auto; background: var(--ink-2); border: 1px solid var(--line-3); box-shadow: 0 24px 60px rgba(0,0,0,.6); }
+  .pop .ph { padding: 14px 16px 10px; }
+  .pop .pi { padding: 10px 16px; border-top: 1px solid var(--line); cursor: pointer; display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+  .pop .pi:hover { background: var(--ink-3); }
+  .pop .pi .meta { white-space: nowrap; }
+  .veil { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.55); display: grid; place-items: center; }
+  .modal { width: 420px; background: var(--ink-2); border: 1px solid var(--line-3); padding: 26px; }
+  .modal p { margin: 10px 0 22px; color: var(--mute); }
+  .modal .row2 { display: flex; justify-content: flex-end; gap: 10px; }
+  .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(20px); opacity: 0; transition: .25s; z-index: 40;
+    background: var(--ink-3); border: 1px solid var(--line-3); border-left: 2px solid var(--signal); padding: 12px 18px; font: 400 12px/1.5 var(--mono); letter-spacing: .02em; max-width: 720px; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.err { border-left-color: #ff6b5b; }
+  .offline { position: fixed; inset: 58px 0 0 0; display: none; place-items: center; background: rgba(10,10,10,.85); z-index: 50; color: var(--mute); }
+  .offline.show { display: grid; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand"><div class="mark"><i></i><i></i><i></i><i></i></div><div class="wordmark">WINDOW GROUPS</div></div>
+    <div class="spacer"></div>
+    <div class="live"><span class="pulse" id="pulse"></span><span class="cap" id="liveLabel">Live</span></div>
+    <div class="switch" id="swAuto" title="When a window that belongs to a group opens, put it in its place"><span class="track"></span><span class="cap">Auto-restore</span></div>
+    <div class="switch" id="swStart"><span class="track"></span><span class="cap">Start with Windows</span></div>
+  </header>
+
+  <div class="body">
+    <aside>
+      <div class="sec"><span class="cap">Saved groups</span><span class="cap n" id="gCount"></span></div>
+      <div class="list groups" id="groups"></div>
+      <div class="deploybar"><button class="btn primary wide" id="deploySel" disabled>Deploy selected</button></div>
+      <div class="sec"><span class="cap">On screen now</span><span class="cap n" id="dCount"></span></div>
+      <div class="list detected" id="detected"></div>
+      <div class="credit cap">Balkaris &middot; v<span id="ver"></span></div>
+    </aside>
+
+    <main>
+      <div class="bar">
+        <span class="cap" id="viewLabel">Everything on screen</span>
+        <div class="spacer"></div>
+        <div class="seg" id="scope"><button data-s="claude">Claude</button><button data-s="all">All apps</button></div>
+      </div>
+      <div class="stage" id="stage"><div class="canvas" id="canvas"></div></div>
+      <section class="detail" id="detail"></section>
+    </main>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<div class="offline" id="offline"><div class="cap">Window Groups is not running. Start it from the Start menu.</div></div>
+
+<script>
+"use strict";
+const TOKEN = "__TOKEN__";
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+let S = null;
+let view = { kind: "live" };      // live | detected (mon) | group (id)
+let scope = localStorage.getItem("wg.scope") || "claude";
+let scopeTouched = !!localStorage.getItem("wg.scope");
+const picked = new Set();           // handles picked in the live view
+const ticked = new Set(JSON.parse(localStorage.getItem("wg.ticked") || "[]"));
+let pop = null;
+
+// ------------------------------------------------------------------ server
+async function getState() {
+  const r = await fetch("/api/state", { headers: { "X-Token": TOKEN }, cache: "no-store" });
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+async function act(op, body) {
+  const r = await fetch("/api/action", {
+    method: "POST", headers: { "Content-Type": "application/json", "X-Token": TOKEN },
+    body: JSON.stringify(Object.assign({ op }, body || {}))
+  });
+  const j = await r.json().catch(() => ({ error: "No answer from Window Groups." }));
+  if (!r.ok || j.error) { const e = new Error(j.error || ("HTTP " + r.status)); e.status = r.status; throw e; }
+  return j;
+}
+async function run(op, body, quiet) {
+  try { const j = await act(op, body); if (!quiet && j.message) toast(j.message); await load(); return j; }
+  catch (e) { toast(e.message, true); throw e; }
+}
+
+let busy = false;
+async function load() {
+  if (busy) return; busy = true;
+  try {
+    S = await getState();
+    $("#offline").classList.remove("show");
+    if (!scopeTouched && !S.claudeFound) scope = "all";
+    // forget selections that no longer exist
+    const live = new Set(S.windows.map(w => w.h));
+    for (const h of [...picked]) if (!live.has(h)) picked.delete(h);
+    for (const id of [...ticked]) if (!S.groups.some(g => g.id === id)) ticked.delete(id);
+    if (view.kind === "group" && !S.groups.some(g => g.id === view.id)) view = { kind: "live" };
+    render();
+  } catch (e) {
+    $("#offline").classList.add("show");
+  } finally { busy = false; }
+}
+setInterval(() => { if (!document.hidden && !pop && !document.querySelector(".veil")) load(); }, 2000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+
+// ------------------------------------------------------------------ helpers
+const winsInScope = () => S.windows.filter(w => scope === "all" || w.claude);
+const detectedInScope = () => scope === "all" ? S.detectedAll : S.detected;
+const monName = i => (S.monitors.find(m => m.i === i) || {}).name || "Off screen";
+const winByH = h => S.windows.find(w => w.h === h);
+const plural = (n, a, b) => n + " " + (n === 1 ? a : (b || a + "s"));
+
+function toast(msg, err) {
+  const t = $("#toast");
+  t.textContent = msg; t.classList.toggle("err", !!err); t.classList.add("show");
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), err ? 6000 : 3800);
+}
+
+function confirmBox(title, text, ok, danger) {
+  return new Promise(res => {
+    const v = document.createElement("div");
+    v.className = "veil";
+    v.innerHTML = '<div class="modal"><div class="dtitle" style="font-size:22px">' + esc(title) + '</div><p>' + esc(text) +
+      '</p><div class="row2"><button class="btn ghost" data-a="0">Cancel</button><button class="btn ' + (danger ? "danger" : "primary") + '" data-a="1">' + esc(ok) + '</button></div></div>';
+    v.addEventListener("click", e => {
+      const a = e.target.getAttribute("data-a");
+      if (a !== null || e.target === v) { v.remove(); res(a === "1"); }
+    });
+    document.body.appendChild(v);
+    v.querySelector('[data-a="1"]').focus();
+  });
+}
+
+// Only touch the DOM when something actually changed. The state refreshes every two seconds;
+// rewriting the lists each time destroyed hover states and could eat a click that landed
+// between mouse-down and mouse-up.
+function setHTML(el, html) { if (el._html !== html) { el._html = html; el.innerHTML = html; } }
+
+function closePop() { if (pop) { pop.remove(); pop = null; } }
+document.addEventListener("mousedown", e => { if (pop && !pop.contains(e.target)) closePop(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") closePop(); });
+
+// ------------------------------------------------------------------ render
+function render() {
+  if (!S) return;
+  $("#ver").textContent = S.version;
+  $("#swAuto").classList.toggle("on", S.settings.autoRestore);
+  $("#swStart").classList.toggle("on", S.settings.startWithWindows);
+  $("#pulse").classList.toggle("off", !S.settings.autoRestore);
+  $("#liveLabel").textContent = S.settings.autoRestore ? "Watching" : "Paused";
+  document.querySelectorAll("#scope button").forEach(b => b.classList.toggle("on", b.dataset.s === scope));
+  renderGroups();
+  renderDetected();
+  renderStage();
+  const editing = document.activeElement && document.activeElement.closest && document.activeElement.closest("#detail") &&
+                  /INPUT|SELECT/.test(document.activeElement.tagName);
+  if (!editing) renderDetail();
+}
+
+function renderGroups() {
+  const el = $("#groups");
+  $("#gCount").textContent = S.groups.length || "";
+  if (!S.groups.length) {
+    setHTML(el, '<div style="padding:18px 22px" class="hint">No groups yet. Arrange some windows, then save a screen from <b>On screen now</b> below, or pick windows on the map.</div>');
+  } else {
+    setHTML(el, S.groups.map(g => {
+      const n = g.slots.length, o = g.open;
+      const cls = o === n ? "all" : o > 0 ? "some" : "";
+      const sel = view.kind === "group" && view.id === g.id;
+      return '<div class="row' + (sel ? " sel" : "") + '" data-id="' + esc(g.id) + '">' +
+        '<div class="tick' + (ticked.has(g.id) ? " on" : "") + '" data-tick="' + esc(g.id) + '"></div>' +
+        '<div style="min-width:0"><div class="name">' + esc(g.name) + '</div>' +
+        '<div class="meta"><b>' + o + '</b>/' + n + ' open' + (g.auto ? ' &middot; auto' : '') + '</div></div>' +
+        '<div class="dot ' + cls + '"></div></div>';
+    }).join(""));
+  }
+  const n = ticked.size;
+  const b = $("#deploySel");
+  b.disabled = n === 0;
+  b.innerHTML = n ? 'Deploy ' + plural(n, "group") + ' <span class="k">' + n + '</span>' : "Tick groups to deploy together";
+}
+
+function renderDetected() {
+  const el = $("#detected");
+  const ds = detectedInScope();
+  $("#dCount").textContent = ds.length || "";
+  if (!ds.length) {
+    setHTML(el, '<div style="padding:0 22px 16px" class="hint">No screen has two or more ' + (scope === "all" ? "" : "Claude ") + 'windows on it right now.</div>');
+    return;
+  }
+  setHTML(el, ds.map(d => {
+    const sel = view.kind === "detected" && view.mon === d.mon;
+    return '<div class="row' + (sel ? " sel" : "") + '" data-mon="' + d.mon + '">' +
+      '<div class="glyph' + (d.tiled ? " tiled" : "") + '"><i></i><i></i><i></i><i></i></div>' +
+      '<div style="min-width:0"><div class="name">' + esc(d.monName) + '</div>' +
+      '<div class="meta">' + plural(d.handles.length, "window") + ' &middot; ' + (d.tiled ? "tiled" : "loose") +
+      (d.behind ? ' &middot; +' + d.behind + ' behind' : '') +
+      (d.savedAs ? ' &middot; <b>' + esc(d.savedAs) + '</b>' : '') + '</div></div>' +
+      '<div class="dot' + (d.savedAs ? " all" : "") + '"></div></div>';
+  }).join(""));
+}
+
+// The map: every screen to scale, windows drawn where they really are.
+function geometry() {
+  const box = $("#stage").getBoundingClientRect();
+  const ms = S.monitors;
+  const minX = Math.min(...ms.map(m => m.x)), minY = Math.min(...ms.map(m => m.y));
+  const maxX = Math.max(...ms.map(m => m.x + m.w)), maxY = Math.max(...ms.map(m => m.y + m.h));
+  const pad = 6, bottom = 4;
+  const s = Math.min((box.width - pad * 2) / (maxX - minX), (box.height - pad - bottom) / (maxY - minY));
+  const ox = (box.width - (maxX - minX) * s) / 2, oy = pad + (box.height - pad - bottom - (maxY - minY) * s) / 2;
+  return { s, X: x => ox + (x - minX) * s, Y: y => oy + (y - minY) * s };
+}
+
+function tileHtml(cls, g, x, y, w, h, title, sub, attrs, n) {
+  const W = Math.max(14, w * g.s), H = Math.max(14, h * g.s);
+  const small = W < 90 || H < 46;
+  return '<div class="tile ' + cls + '" ' + (attrs || "") + ' style="left:' + g.X(x).toFixed(1) + 'px;top:' + g.Y(y).toFixed(1) +
+    'px;width:' + W.toFixed(1) + 'px;height:' + H.toFixed(1) + 'px">' +
+    (n ? '<span class="n">' + n + '</span>' : '') +
+    (small ? '' : '<div class="t">' + esc(title) + '</div>' + (sub ? '<div class="s">' + sub + '</div>' : '')) + '</div>';
+}
+
+function renderStage() {
+  const c = $("#canvas");
+  if (!S.monitors.length) { setHTML(c, ""); return; }
+  const g = geometry();
+  let html = "", labels = "";
+  let focusMons = null;
+  if (view.kind === "detected") focusMons = new Set([view.mon]);
+  if (view.kind === "group") { const gr = S.groups.find(x => x.id === view.id); if (gr) focusMons = new Set(gr.slots.map(s => s.mon)); }
+
+  for (const m of S.monitors) {
+    const dim = focusMons && !focusMons.has(m.i);
+    html += '<div class="mon' + (dim ? " dim" : "") + '" style="left:' + g.X(m.x).toFixed(1) + 'px;top:' + g.Y(m.y).toFixed(1) + 'px;width:' + (m.w * g.s).toFixed(1) + 'px;height:' + (m.h * g.s).toFixed(1) + 'px"></div>';
+    labels += '<span class="ml' + (dim ? " dim" : "") + '" style="left:' + (g.X(m.x) + 8).toFixed(1) + 'px;top:' + (g.Y(m.y + m.h) - 1).toFixed(1) + 'px"><b>' + esc(m.name) + '</b> &nbsp;' + m.w + '&times;' + m.h + '</span>';
+  }
+
+  const wins = winsInScope().filter(w => !w.min).sort((a, b) => b.z - a.z);   // bottom of the stack drawn first
+  if (view.kind === "live") {
+    for (const w of wins) {
+      const on = picked.has(w.h);
+      html += tileHtml("pick" + (on ? " on" : ""), g, w.vx, w.vy, w.vw, w.vh, w.title, on ? "picked" : (w.max ? "maximized" : ""), 'data-pick="' + w.h + '"');
+    }
+  } else if (view.kind === "detected") {
+    const d = detectedInScope().find(x => x.mon === view.mon);
+    const set = new Set(d ? d.handles : []);
+    for (const w of wins) {
+      if (set.has(w.h)) html += tileHtml("on", g, w.vx, w.vy, w.vw, w.vh, w.title, "open", "");
+      else html += tileHtml("ghost", g, w.vx, w.vy, w.vw, w.vh, w.title, "", "");
+    }
+  } else if (view.kind === "group") {
+    const gr = S.groups.find(x => x.id === view.id);
+    const used = new Set(gr ? gr.slots.filter(s => s.open).map(s => s.h) : []);
+    for (const w of wins) if (!used.has(w.h)) html += tileHtml("ghost", g, w.vx, w.vy, w.vw, w.vh, w.title, "", "");
+    if (gr) {
+      const order = gr.slots.slice().sort((a, b) => b.z - a.z);
+      for (const s of order) {
+        const n = String(s.i + 1).padStart(2, "0");
+        // a slot's rect includes the invisible 7px resize border; draw the visible part
+        const x = s.x + 7, y = s.y, w = s.w - 14, h = s.h2 - 7;
+        if (s.open) html += tileHtml("on", g, x, y, w, h, s.title, "open", 'data-slot="' + s.i + '"', n);
+        else html += tileHtml("missing", g, x, y, w, h, s.title, "not open &middot; replace", 'data-miss="' + s.i + '"', n);
+      }
+    }
+  }
+  setHTML(c, html + labels);     // labels last: always readable, never buried under a window
+}
+
+function renderDetail() {
+  const el = $("#detail");
+  if (view.kind === "live") {
+    $("#viewLabel").textContent = "Everything on screen";
+    const n = picked.size;
+    setHTML(el,
+      '<div class="dhead"><div><div class="dtitle">' + (n ? plural(n, "window") + " picked" : "Pick windows on the map") + '</div>' +
+      '<div class="dmeta meta">' + plural(winsInScope().length, "window") + ' open &middot; ' + plural(S.monitors.length, "screen") + '</div></div>' +
+      '<div class="actions">' +
+        (n ? '<input id="newName" class="btn" style="width:220px;cursor:text" placeholder="Name this group" autocomplete="off">' : '') +
+        '<button class="btn primary" id="savePicked"' + (n ? "" : " disabled") + '>Save as group</button>' +
+        '<button class="btn" id="showPicked"' + (n ? "" : " disabled") + '>Show on screen</button>' +
+        (n ? '<button class="btn ghost" id="clearPicked">Clear</button>' : '') +
+      '</div></div>' +
+      '<p class="hint" style="margin-top:16px">Click windows on the map to pick them - across any screens. Or save a whole screen from <b>On screen now</b>: every screen with two or more windows on it shows up there by itself.</p>');
+    return;
+  }
+
+  if (view.kind === "detected") {
+    const d = detectedInScope().find(x => x.mon === view.mon);
+    if (!d) { view = { kind: "live" }; return renderDetail(); }
+    $("#viewLabel").textContent = "On screen now - " + d.monName;
+    setHTML(el,
+      '<div class="dhead"><div><div class="dtitle"><input id="newName" value="' + esc(d.savedAs || d.monName) + '" autocomplete="off"></div>' +
+      '<div class="dmeta meta">' + plural(d.handles.length, "window") + ' &middot; ' + (d.tiled ? "tiled" : "loose") + ' &middot; ' + Math.round(d.coverage * 100) + '% of the screen' +
+      (d.behind ? ' &middot; ' + d.behind + ' hidden behind, left out' : '') +
+      (d.savedAs ? ' &middot; already saved as <b>' + esc(d.savedAs) + '</b>' : '') + '</div></div>' +
+      '<div class="actions"><button class="btn primary" id="saveDetected">' + (d.savedAs ? "Save again" : "Save as group") + '</button>' +
+      '<button class="btn" id="showDetected">Show on screen</button></div></div>' +
+      '<div class="slots">' + d.handles.map((h, i) => {
+        const w = winByH(h) || {};
+        return '<div class="slot"><span class="ix">' + String(i + 1).padStart(2, "0") + '</span><span class="name">' + esc(w.title) + '</span>' +
+          '<span class="meta">' + esc(monName(w.mon)) + '</span><span class="meta">' + w.w + ' &times; ' + w.h2 + '</span><span class="st ok">open</span><span></span></div>';
+      }).join("") + '</div>');
+    return;
+  }
+
+  const gr = S.groups.find(x => x.id === view.id);
+  if (!gr) { view = { kind: "live" }; return renderDetail(); }
+  $("#viewLabel").textContent = "Group - " + gr.name;
+  const missing = gr.slots.filter(s => !s.open).length;
+  const used = new Set(gr.slots.filter(s => s.open).map(s => s.h));
+  const candidates = winsInScope().filter(w => !used.has(w.h));
+  setHTML(el,
+    '<div class="dhead"><div><div class="dtitle"><input id="renameIn" value="' + esc(gr.name) + '" autocomplete="off"></div>' +
+    '<div class="dmeta meta"><b>' + gr.open + '</b>/' + gr.slots.length + ' open' + (missing ? ' &middot; <span style="color:var(--amber)">' + missing + ' not open</span>' : '') +
+    ' &middot; saved ' + esc(gr.saved || "") + '</div></div>' +
+    '<div class="actions">' +
+      '<button class="btn primary" id="deployOne">Deploy</button>' +
+      '<button class="btn" id="showGroup">Show on screen</button>' +
+      '<button class="btn" id="updateGroup" title="Save where this group\'s windows are right now">Update positions</button>' +
+      '<div class="switch' + (gr.auto ? " on" : "") + '" id="swGroupAuto" style="margin:0 6px" title="Put this group back by itself when its windows open"><span class="track"></span><span class="cap">Auto</span></div>' +
+      '<button class="btn ghost danger" id="deleteGroup">Delete</button>' +
+    '</div></div>' +
+    '<div class="slots">' + gr.slots.map(s => {
+      const opts = '<option value="">' + (s.open ? "Swap for..." : "Replace with...") + '</option>' +
+        candidates.map(w => '<option value="' + w.h + '">' + esc(w.title) + '</option>').join("");
+      return '<div class="slot">' +
+        '<span class="ix">' + String(s.i + 1).padStart(2, "0") + '</span>' +
+        '<span class="name" style="' + (s.open ? "" : "color:var(--mute)") + '">' + esc(s.title) + '</span>' +
+        '<span class="meta">' + esc(monName(s.mon)) + '</span>' +
+        '<span class="meta">' + s.w + ' &times; ' + s.h2 + (s.max ? " max" : "") + '</span>' +
+        (s.open ? '<span class="st ok">open</span>'
+                : '<select class="dark" data-replace="' + s.i + '">' + opts + '</select>') +
+        '<button class="x" title="Remove from group" data-remove="' + s.i + '">&times;</button>' +
+      '</div>';
+    }).join("") + '</div>' +
+    (missing ? '<p class="hint" style="margin-top:14px">A dashed slot is a window that is not open. Click it on the map, or use <b>Replace with</b>, to put another open window in that place.</p>' : ''));
+}
+
+// ------------------------------------------------------------------ interaction
+$("#groups").addEventListener("click", e => {
+  const t = e.target.closest("[data-tick]");
+  if (t) {
+    const id = t.getAttribute("data-tick");
+    ticked.has(id) ? ticked.delete(id) : ticked.add(id);
+    localStorage.setItem("wg.ticked", JSON.stringify([...ticked]));
+    renderGroups(); return;
+  }
+  const r = e.target.closest("[data-id]");
+  if (r) { view = { kind: "group", id: r.getAttribute("data-id") }; closePop(); render(); }
+});
+$("#groups").addEventListener("dblclick", e => {
+  const r = e.target.closest("[data-id]");
+  if (r && !e.target.closest("[data-tick]")) run("deploy", { ids: [r.getAttribute("data-id")] });
+});
+$("#detected").addEventListener("click", e => {
+  const r = e.target.closest("[data-mon]");
+  if (r) { view = { kind: "detected", mon: +r.getAttribute("data-mon") }; closePop(); render(); }
+});
+$("#deploySel").addEventListener("click", () => run("deploy", { ids: [...ticked] }));
+
+$("#scope").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  scope = b.dataset.s; scopeTouched = true; localStorage.setItem("wg.scope", scope);
+  if (view.kind === "detected") view = { kind: "live" };
+  render();
+});
+
+$("#swAuto").addEventListener("click", () => run("setting", { key: "autoRestore", value: !S.settings.autoRestore }));
+$("#swStart").addEventListener("click", () => run("setting", { key: "startWithWindows", value: !S.settings.startWithWindows }));
+
+$("#canvas").addEventListener("click", e => {
+  const p = e.target.closest("[data-pick]");
+  if (p) { const h = p.getAttribute("data-pick"); picked.has(h) ? picked.delete(h) : picked.add(h); render(); return; }
+  const m = e.target.closest("[data-miss]");
+  if (m) { openReplace(+m.getAttribute("data-miss"), m.getBoundingClientRect()); return; }
+});
+
+function openReplace(index, rect) {
+  closePop();
+  const gr = S.groups.find(x => x.id === view.id); if (!gr) return;
+  const slot = gr.slots[index];
+  const used = new Set(gr.slots.filter(s => s.open).map(s => s.h));
+  const cands = winsInScope().filter(w => !used.has(w.h));
+  pop = document.createElement("div");
+  pop.className = "pop";
+  pop.innerHTML = '<div class="ph"><div class="cap">Not open</div><div style="margin-top:8px;font-weight:500">' + esc(slot.title) +
+    '</div><div class="meta" style="margin-top:6px">Put another open window in its place:</div></div>' +
+    (cands.length ? cands.map(w => '<div class="pi" data-h="' + w.h + '"><span>' + esc(w.title) + '</span><span class="meta">' + esc(monName(w.mon)) + '</span></div>').join("")
+                  : '<div class="pi" style="cursor:default;color:var(--mute)">No other windows open.</div>');
+  const x = Math.min(window.innerWidth - 330, Math.max(10, rect.left));
+  const y = Math.min(window.innerHeight - 370, Math.max(68, rect.top));
+  pop.style.left = x + "px"; pop.style.top = y + "px";
+  pop.addEventListener("click", e => {
+    const it = e.target.closest("[data-h]"); if (!it) return;
+    closePop();
+    run("replace", { id: gr.id, index, handle: it.getAttribute("data-h") });
+  });
+  document.body.appendChild(pop);
+}
+
+$("#detail").addEventListener("click", async e => {
+  const id = e.target.id || (e.target.closest("button") || {}).id;
+  const gr = view.kind === "group" ? S.groups.find(x => x.id === view.id) : null;
+
+  if (id === "clearPicked") { picked.clear(); render(); }
+  if (id === "showPicked") run("overlayHandles", { handles: [...picked], label: "Picked" });
+  if (id === "savePicked" || id === "saveDetected") {
+    const name = ($("#newName") && $("#newName").value.trim()) || "";
+    if (!name) { toast("Give the group a name first.", true); if ($("#newName")) $("#newName").focus(); return; }
+    const handles = id === "savePicked" ? [...picked] : (detectedInScope().find(x => x.mon === view.mon) || { handles: [] }).handles;
+    try {
+      const j = await act("save", { name, handles });
+      toast(j.message); picked.clear(); view = { kind: "group", id: j.id }; await load();
+    } catch (err) {
+      if (err.status === 409 && await confirmBox("Replace " + name + "?", err.message + " Saving replaces its windows and positions with these.", "Replace")) {
+        const j = await run("save", { name, handles, replace: true }); view = { kind: "group", id: j.id }; picked.clear(); render();
+      } else if (err.status !== 409) toast(err.message, true);
+    }
+  }
+  if (id === "showDetected") {
+    const d = detectedInScope().find(x => x.mon === view.mon);
+    if (d) run("overlayHandles", { handles: d.handles, label: d.monName });
+  }
+  if (!gr) return;
+  if (id === "deployOne") run("deploy", { ids: [gr.id] });
+  if (id === "showGroup") run("overlay", { id: gr.id });
+  if (id === "updateGroup") run("update", { id: gr.id });
+  if (e.target.closest("#swGroupAuto")) run("auto", { id: gr.id, on: !gr.auto });
+  if (id === "deleteGroup" && await confirmBox("Delete " + gr.name + "?", "The group goes. The windows themselves are not touched.", "Delete", true)) {
+    await run("delete", { id: gr.id }); ticked.delete(gr.id); view = { kind: "live" }; render();
+  }
+  const rm = e.target.closest("[data-remove]");
+  if (rm) {
+    const i = +rm.getAttribute("data-remove");
+    if (await confirmBox("Remove from " + gr.name + "?", gr.slots[i].title, "Remove", true)) run("removeSlot", { id: gr.id, index: i });
+  }
+});
+
+$("#detail").addEventListener("change", e => {
+  const s = e.target.closest("[data-replace]");
+  if (s && s.value && view.kind === "group") run("replace", { id: view.id, index: +s.getAttribute("data-replace"), handle: s.value });
+});
+
+$("#detail").addEventListener("keydown", e => {
+  if (e.key === "Enter" && e.target.id === "newName") {
+    const b = $("#savePicked") || $("#saveDetected"); if (b) b.click();
+  }
+  if (e.key === "Enter" && e.target.id === "renameIn") e.target.blur();
+  if (e.key === "Escape" && e.target.id === "renameIn") { e.target.value = (S.groups.find(x => x.id === view.id) || {}).name || ""; e.target.blur(); }
+});
+$("#detail").addEventListener("focusout", e => {
+  if (e.target.id !== "renameIn" || view.kind !== "group") return;
+  const gr = S.groups.find(x => x.id === view.id);
+  const v = e.target.value.trim();
+  if (gr && v && v !== gr.name) run("rename", { id: gr.id, name: v });
+});
+
+window.addEventListener("resize", () => { if (S) renderStage(); });
+// #g=<group id> or #screen=<n> opens straight on that group or screen
+(function () {
+  const m = location.hash.match(/^#(g|screen)=(.+)$/);
+  if (m) view = m[1] === "g" ? { kind: "group", id: decodeURIComponent(m[2]) } : { kind: "detected", mon: +m[2] };
+})();
+load();
+</script>
+</body>
+</html>

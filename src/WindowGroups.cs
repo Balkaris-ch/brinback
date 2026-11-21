@@ -1,0 +1,1551 @@
+// Window Groups - save a set of windows exactly as they sit, bring them all back with one click,
+// and put them back by themselves when the app that owns them restarts.
+//
+// One file, C# 5, .NET Framework 4.x - so it builds with the csc.exe that ships with every copy
+// of Windows 10 and 11 and needs nothing installed. See build.cmd.
+//
+// Shape of it:
+//   Desk         reads and moves top-level windows; every coordinate is physical pixels
+//   Claude       knows where the Claude desktop app keeps its session pop-outs, so a window is
+//                remembered by its session, not just its title
+//   Store        groups.json in %APPDATA%\WindowGroups, written via temp file + replace
+//   Layouts      matches a saved group to the windows open now, detects layouts on each screen
+//   AutoRestore  watches for windows that belong to a group and puts them in place as they open
+//   Overlay      draws a group on the real screens, with names, for a few seconds
+//   Http         a tiny loopback-only server for the UI (a web page in a chromeless window)
+//   Tray         the icon, its menu, starting with Windows
+
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Text;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading;
+using System.Web.Script.Serialization;
+using System.Windows.Forms;
+using Microsoft.Win32;
+
+[assembly: AssemblyTitle("Window Groups")]
+[assembly: AssemblyDescription("Save window layouts. Bring them back.")]
+[assembly: AssemblyProduct("Window Groups")]
+[assembly: AssemblyCopyright("MIT License")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
+
+namespace WindowGroups
+{
+    // ============================================================ native
+
+    static class N
+    {
+        public delegate bool EnumProc(IntPtr h, IntPtr l);
+        public delegate bool MonProc(IntPtr hMon, IntPtr hdc, ref RECT r, IntPtr l);
+
+        [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+        [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+        [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
+        [StructLayout(LayoutKind.Sequential)] public struct WINDOWPLACEMENT { public int length; public int flags; public int showCmd; public POINT ptMin; public POINT ptMax; public RECT rcNormal; }
+
+        [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
+        [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+        [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+        [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+        [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+        [DllImport("user32.dll")] public static extern bool GetWindowPlacement(IntPtr h, ref WINDOWPLACEMENT p);
+        [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+        [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hh, uint f);
+        [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+        [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int idx);
+        [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonProc cb, IntPtr l);
+        [DllImport("user32.dll")] public static extern bool GetMonitorInfo(IntPtr hMon, ref MONITORINFO mi);
+        [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
+        [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+        [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int val, int size);
+        [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT val, int size);
+        [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
+
+        public const int SW_RESTORE = 9, SW_MAXIMIZE = 3;
+        public const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10;
+        public static readonly IntPtr TOPMOST = new IntPtr(-1), NOTOPMOST = new IntPtr(-2);
+    }
+
+    // ============================================================ the desktop
+
+    class Win
+    {
+        public long Handle; public string Title; public string Process; public string Class;
+        public int X, Y, W, H;          // GetWindowRect - what SetWindowPos takes back
+        public int VX, VY, VW, VH;      // DWM frame - what you actually see
+        public bool Min, Max; public int Z; public int Mon = -1;
+        public bool IsClaude { get { return string.Equals(Process, "claude", StringComparison.OrdinalIgnoreCase); } }
+    }
+
+    class Mon
+    {
+        public int Index; public int X, Y, W, H; public bool Primary; public string Name;
+    }
+
+    static class Desk
+    {
+        public const string UiTitle = "Window Groups";
+        static readonly int SelfPid = Process.GetCurrentProcess().Id;
+
+        public static List<Mon> Monitors()
+        {
+            var list = new List<Mon>();
+            N.EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, delegate (IntPtr hm, IntPtr hdc, ref N.RECT rc, IntPtr l)
+            {
+                var mi = new N.MONITORINFO();
+                mi.cbSize = Marshal.SizeOf(typeof(N.MONITORINFO));
+                N.GetMonitorInfo(hm, ref mi);
+                var m = new Mon();
+                m.X = mi.rcMonitor.L; m.Y = mi.rcMonitor.T;
+                m.W = mi.rcMonitor.R - mi.rcMonitor.L; m.H = mi.rcMonitor.B - mi.rcMonitor.T;
+                m.Primary = (mi.dwFlags & 1) != 0;
+                list.Add(m);
+                return true;
+            }, IntPtr.Zero);
+            list = list.OrderBy(m => m.X).ThenBy(m => m.Y).ToList();
+            for (int i = 0; i < list.Count; i++) list[i].Index = i;
+            NameThem(list);
+            return list;
+        }
+
+        // "Top left", "Main", "Far right" - names a person uses, worked out from where each screen
+        // sits relative to the primary one.
+        static void NameThem(List<Mon> ms)
+        {
+            if (ms.Count == 0) return;
+            Mon p = ms.FirstOrDefault(m => m.Primary) ?? ms[0];
+            double pcx = p.X + p.W / 2.0, pcy = p.Y + p.H / 2.0;
+            foreach (var m in ms)
+            {
+                if (m == p) { m.Name = ms.Count == 1 ? "Screen" : "Main"; continue; }
+                double dx = m.X + m.W / 2.0 - pcx, dy = m.Y + m.H / 2.0 - pcy;
+                string v = dy < -p.H * 0.5 ? "Top" : dy > p.H * 0.5 ? "Bottom" : "";
+                string h = "";
+                if (dx < -p.W * 0.25) h = dx < -p.W * 1.5 ? "far left" : "left";
+                else if (dx > p.W * 0.25) h = dx > p.W * 1.5 ? "far right" : "right";
+                if (v != "" && h != "") m.Name = v + " " + h;
+                else if (v != "") m.Name = v;
+                else if (h != "") m.Name = char.ToUpper(h[0]) + h.Substring(1);
+                else m.Name = "Screen";
+            }
+            foreach (var dup in ms.GroupBy(m => m.Name).Where(g => g.Count() > 1))
+            {
+                int n = 1;
+                foreach (var m in dup.OrderBy(m => m.X).ThenBy(m => m.Y)) m.Name = m.Name + " " + (n++);
+            }
+        }
+
+        public static int MonitorOf(int x, int y, int w, int h, List<Mon> mons)
+        {
+            int best = -1; long bestArea = 0;
+            foreach (var m in mons)
+            {
+                long ix = Math.Max(0, Math.Min(x + w, m.X + m.W) - Math.Max(x, m.X));
+                long iy = Math.Max(0, Math.Min(y + h, m.Y + m.H) - Math.Max(y, m.Y));
+                if (ix * iy > bestArea) { bestArea = ix * iy; best = m.Index; }
+            }
+            if (best >= 0 || mons.Count == 0) return best;
+            // Entirely off every screen: the nearest one.
+            double cx = x + w / 2.0, cy = y + h / 2.0, bd = double.MaxValue;
+            foreach (var m in mons)
+            {
+                double d = Math.Abs(m.X + m.W / 2.0 - cx) + Math.Abs(m.Y + m.H / 2.0 - cy);
+                if (d < bd) { bd = d; best = m.Index; }
+            }
+            return best;
+        }
+
+        public static List<Win> List(List<Mon> mons)
+        {
+            var list = new List<Win>();
+            var names = new Dictionary<uint, string>();
+            int z = 0;
+            N.EnumWindows(delegate (IntPtr h, IntPtr l)
+            {
+                if (!N.IsWindowVisible(h)) return true;
+                if (N.GetWindow(h, 4) != IntPtr.Zero) return true;                 // owned: dialogs, menus
+                if ((N.GetWindowLong(h, -20) & 0x80) != 0) return true;             // tool windows
+                int cloaked;
+                if (N.DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0 && cloaked != 0) return true;
+                int len = N.GetWindowTextLength(h);
+                if (len <= 0) return true;
+                var cls = new StringBuilder(256);
+                N.GetClassName(h, cls, cls.Capacity);
+                string c = cls.ToString();
+                if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd" || c == "Shell_SecondaryTrayWnd") return true;
+                uint pid;
+                N.GetWindowThreadProcessId(h, out pid);
+                if (pid == SelfPid) return true;
+                string pn;
+                if (!names.TryGetValue(pid, out pn))
+                {
+                    try { pn = Process.GetProcessById((int)pid).ProcessName; } catch { pn = "?"; }
+                    names[pid] = pn;
+                }
+                var sb = new StringBuilder(len + 1);
+                N.GetWindowText(h, sb, sb.Capacity);
+                string title = sb.ToString();
+                if (IsUiWindow(title, pn)) return true;
+
+                var w = new Win();
+                w.Handle = h.ToInt64(); w.Title = title; w.Process = pn; w.Class = c;
+                w.Min = N.IsIconic(h); w.Max = N.IsZoomed(h); w.Z = z++;
+                N.RECT r;
+                if (w.Min)
+                {
+                    // A minimized window reports -32000,-32000. Where it lives is where it will
+                    // come back to, and only the placement record knows that.
+                    var p = new N.WINDOWPLACEMENT();
+                    p.length = Marshal.SizeOf(typeof(N.WINDOWPLACEMENT));
+                    N.GetWindowPlacement(h, ref p);
+                    r = p.rcNormal;
+                }
+                else N.GetWindowRect(h, out r);
+                w.X = r.L; w.Y = r.T; w.W = r.R - r.L; w.H = r.B - r.T;
+                N.RECT v;
+                if (!w.Min && N.DwmGetWindowAttribute(h, 9, out v, Marshal.SizeOf(typeof(N.RECT))) == 0)
+                { w.VX = v.L; w.VY = v.T; w.VW = v.R - v.L; w.VH = v.B - v.T; }
+                else { w.VX = w.X; w.VY = w.Y; w.VW = w.W; w.VH = w.H; }
+                w.Mon = MonitorOf(w.VX, w.VY, w.VW, w.VH, mons);
+                list.Add(w);
+                return true;
+            }, IntPtr.Zero);
+            return list;
+        }
+
+        static bool IsUiWindow(string title, string process)
+        {
+            return title == UiTitle &&
+                   (process.Equals("msedge", StringComparison.OrdinalIgnoreCase) ||
+                    process.Equals("chrome", StringComparison.OrdinalIgnoreCase));
+        }
+
+        public static IntPtr FindUi()
+        {
+            IntPtr found = IntPtr.Zero;
+            N.EnumWindows(delegate (IntPtr h, IntPtr l)
+            {
+                if (!N.IsWindowVisible(h)) return true;
+                int len = N.GetWindowTextLength(h);
+                if (len <= 0) return true;
+                var sb = new StringBuilder(len + 1);
+                N.GetWindowText(h, sb, sb.Capacity);
+                if (sb.ToString() != UiTitle) return true;
+                uint pid;
+                N.GetWindowThreadProcessId(h, out pid);
+                string pn;
+                try { pn = Process.GetProcessById((int)pid).ProcessName; } catch { return true; }
+                if (IsUiWindow(UiTitle, pn)) { found = h; return false; }
+                return true;
+            }, IntPtr.Zero);
+            return found;
+        }
+
+        public static bool Place(long handle, int x, int y, int w, int h, bool max)
+        {
+            var hw = new IntPtr(handle);
+            if (!N.IsWindow(hw)) return false;
+            if (N.IsIconic(hw) || N.IsZoomed(hw)) N.ShowWindow(hw, N.SW_RESTORE);
+            // Twice on purpose: a window moved onto a screen with a different scale resizes itself
+            // on arrival, and the second call puts the size back.
+            N.SetWindowPos(hw, IntPtr.Zero, x, y, w, h, N.SWP_NOZORDER | N.SWP_NOACTIVATE);
+            N.SetWindowPos(hw, IntPtr.Zero, x, y, w, h, N.SWP_NOZORDER | N.SWP_NOACTIVATE);
+            if (max) N.ShowWindow(hw, N.SW_MAXIMIZE);
+            return true;
+        }
+
+        // To the top of the stack without taking keyboard focus - this works from a background
+        // process, which SetForegroundWindow does not.
+        public static void Raise(long handle)
+        {
+            var hw = new IntPtr(handle);
+            if (N.IsIconic(hw)) N.ShowWindow(hw, N.SW_RESTORE);
+            N.SetWindowPos(hw, N.TOPMOST, 0, 0, 0, 0, N.SWP_NOSIZE | N.SWP_NOMOVE | N.SWP_NOACTIVATE);
+            N.SetWindowPos(hw, N.NOTOPMOST, 0, 0, 0, 0, N.SWP_NOSIZE | N.SWP_NOMOVE | N.SWP_NOACTIVATE);
+        }
+    }
+
+    // ============================================================ Claude desktop
+
+    // The Claude desktop app writes every session pop-out window to session-popouts.json with its
+    // session id and title. Keeping the id means a group still finds a session after it is renamed.
+    static class Claude
+    {
+        static Dictionary<string, string> cache = new Dictionary<string, string>();
+        static DateTime cacheAt = DateTime.MinValue;
+        static readonly object gate = new object();
+
+        public static Dictionary<string, string> Titles()
+        {
+            lock (gate)
+            {
+                if ((DateTime.Now - cacheAt).TotalSeconds < 2) return cache;
+                var map = new Dictionary<string, string>();
+                string f = FindPopouts();
+                if (f != null)
+                {
+                    try
+                    {
+                        var ser = new JavaScriptSerializer();
+                        var root = ser.DeserializeObject(File.ReadAllText(f, Encoding.UTF8)) as Dictionary<string, object>;
+                        object arr;
+                        if (root != null && root.TryGetValue("popouts", out arr) && arr is System.Collections.IEnumerable)
+                        {
+                            foreach (var o in (System.Collections.IEnumerable)arr)
+                            {
+                                var d = o as Dictionary<string, object>;
+                                if (d == null) continue;
+                                object sid, title;
+                                if (d.TryGetValue("sessionId", out sid) && d.TryGetValue("title", out title) && sid != null && title != null)
+                                    map[sid.ToString()] = title.ToString();
+                            }
+                        }
+                    }
+                    catch (Exception e) { Log.Write("claude: popouts unreadable - " + e.Message); }
+                }
+                cache = map; cacheAt = DateTime.Now;
+                return map;
+            }
+        }
+
+        static string FindPopouts()
+        {
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string roam = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            var roots = new[] { Path.Combine(local, "Claude-Data"), Path.Combine(roam, "Claude"), Path.Combine(local, "Claude") };
+            string best = null; DateTime bt = DateTime.MinValue;
+            foreach (var r in roots)
+            {
+                if (!Directory.Exists(r)) continue;
+                var candidates = new List<string> { Path.Combine(r, "session-popouts.json") };
+                try { foreach (var d in Directory.GetDirectories(r)) candidates.Add(Path.Combine(d, "session-popouts.json")); } catch { }
+                foreach (var c in candidates)
+                {
+                    if (!File.Exists(c)) continue;
+                    var t = File.GetLastWriteTime(c);
+                    if (t > bt) { bt = t; best = c; }
+                }
+            }
+            return best;
+        }
+
+        public static DateTime? ProcessStarted()
+        {
+            DateTime? first = null;
+            foreach (var p in Process.GetProcessesByName("claude"))
+            {
+                try { if (first == null || p.StartTime < first) first = p.StartTime; } catch { }
+            }
+            return first;
+        }
+    }
+
+    // ============================================================ data
+
+    class Slot
+    {
+        public string SessionId; public string Title; public string Process;
+        public int X, Y, W, H; public bool Max; public int Z;
+    }
+
+    class Group
+    {
+        public string Id; public string Name; public bool Auto = true; public string Saved;
+        public List<Slot> Slots = new List<Slot>();
+    }
+
+    class Data
+    {
+        public int Version = 2;
+        public bool AutoRestore = true;
+        public List<Group> Groups = new List<Group>();
+    }
+
+    static class Store
+    {
+        public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WindowGroups");
+        public static readonly string FilePath = Path.Combine(Dir, "groups.json");
+        public static Data D = new Data();
+        public static readonly object Gate = new object();
+
+        public static void Load()
+        {
+            lock (Gate)
+            {
+                if (!File.Exists(FilePath)) { D = new Data(); return; }
+                try
+                {
+                    var d = new JavaScriptSerializer().Deserialize<Data>(File.ReadAllText(FilePath, Encoding.UTF8));
+                    D = d ?? new Data();
+                    if (D.Groups == null) D.Groups = new List<Group>();
+                    foreach (var g in D.Groups) if (g.Slots == null) g.Slots = new List<Slot>();
+                }
+                catch (Exception e)
+                {
+                    // Never start empty over a file we could not read - that would overwrite it on
+                    // the next save. Keep it aside, under a name that says what happened.
+                    string aside = Path.Combine(Dir, "groups.unreadable-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".json");
+                    try { File.Copy(FilePath, aside, true); } catch { }
+                    Log.Write("store: groups.json unreadable (" + e.Message + ") - kept as " + Path.GetFileName(aside));
+                    D = new Data();
+                }
+            }
+        }
+
+        // Temp file, then replace. A crash or a full disk halfway through must never leave an
+        // empty groups.json behind.
+        public static void Save()
+        {
+            lock (Gate)
+            {
+                Directory.CreateDirectory(Dir);
+                string json = new JavaScriptSerializer().Serialize(D);
+                string tmp = FilePath + ".tmp";
+                File.WriteAllText(tmp, json, new UTF8Encoding(false));
+                if (File.Exists(FilePath)) File.Replace(tmp, FilePath, null);
+                else File.Move(tmp, FilePath);
+            }
+        }
+
+        public static Group Find(string id)
+        {
+            return D.Groups.FirstOrDefault(g => g.Id == id);
+        }
+
+        public static string NewId()
+        {
+            return Guid.NewGuid().ToString("N").Substring(0, 10);
+        }
+    }
+
+    static class Log
+    {
+        static readonly object gate = new object();
+        public static void Write(string m)
+        {
+            lock (gate)
+            {
+                try
+                {
+                    Directory.CreateDirectory(Store.Dir);
+                    string f = Path.Combine(Store.Dir, "log.txt");
+                    if (File.Exists(f) && new FileInfo(f).Length > 1000000)
+                        File.Copy(f, f + ".old", true);
+                    if (File.Exists(f) && new FileInfo(f).Length > 1000000) File.Delete(f);
+                    File.AppendAllText(f, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + m + Environment.NewLine, Encoding.UTF8);
+                }
+                catch { }
+            }
+        }
+    }
+
+    // ============================================================ layouts
+
+    class SlotState { public int Index; public Slot Slot; public Win Window; public string Title; public int Mon; }
+
+    static class Layouts
+    {
+        // Match a saved group to the windows open right now. Claude sessions by session id first
+        // (their current title), then anything by exact title; two candidates with the same title
+        // go to whichever already sits nearest the slot.
+        public static List<SlotState> Resolve(Group g, List<Win> open, Dictionary<string, string> titles, List<Mon> mons)
+        {
+            var used = new HashSet<long>();
+            var res = new List<SlotState>();
+            for (int i = 0; i < g.Slots.Count; i++)
+            {
+                var s = g.Slots[i];
+                string want = s.Title;
+                if (!string.IsNullOrEmpty(s.SessionId) && titles.ContainsKey(s.SessionId)) want = titles[s.SessionId];
+                Win hit = Pick(open, used, want, s);
+                if (hit == null && want != s.Title) hit = Pick(open, used, s.Title, s);
+                if (hit != null) used.Add(hit.Handle);
+                var st = new SlotState();
+                st.Index = i; st.Slot = s; st.Window = hit;
+                st.Title = hit != null ? hit.Title : want;
+                st.Mon = Desk.MonitorOf(s.X, s.Y, s.W, s.H, mons);
+                res.Add(st);
+            }
+            return res;
+        }
+
+        static Win Pick(List<Win> open, HashSet<long> used, string title, Slot s)
+        {
+            return open.Where(w => !used.Contains(w.Handle) && w.Title == title &&
+                                   (string.IsNullOrEmpty(s.Process) || string.Equals(w.Process, s.Process, StringComparison.OrdinalIgnoreCase)))
+                       .OrderBy(w => Math.Abs(w.X - s.X) + Math.Abs(w.Y - s.Y))
+                       .FirstOrDefault();
+        }
+
+        public static List<Slot> Snapshot(IEnumerable<Win> wins)
+        {
+            var titles = Claude.Titles();
+            var bySession = new Dictionary<string, string>();
+            foreach (var kv in titles) if (!bySession.ContainsKey(kv.Value)) bySession[kv.Value] = kv.Key;
+            var slots = new List<Slot>();
+            foreach (var w in wins.OrderBy(w => w.Z))
+            {
+                var s = new Slot();
+                s.Title = w.Title; s.Process = w.Process;
+                if (w.IsClaude && bySession.ContainsKey(w.Title)) s.SessionId = bySession[w.Title];
+                s.X = w.X; s.Y = w.Y; s.W = w.W; s.H = w.H; s.Max = w.Max; s.Z = w.Z;
+                slots.Add(s);
+            }
+            return slots;
+        }
+
+        public class DeployResult { public string Group; public int Placed; public int Total; public List<string> Missing = new List<string>(); }
+
+        public static DeployResult Deploy(Group g)
+        {
+            var mons = Desk.Monitors();
+            var open = Desk.List(mons);
+            var states = Resolve(g, open, Claude.Titles(), mons);
+            var r = new DeployResult { Group = g.Name, Total = states.Count };
+            // Lowest in the saved stack first, so raising them one by one leaves the top one on top.
+            var live = states.Where(s => s.Window != null).OrderByDescending(s => s.Slot.Z).ToList();
+            foreach (var s in live)
+                if (Desk.Place(s.Window.Handle, s.Slot.X, s.Slot.Y, s.Slot.W, s.Slot.H, s.Slot.Max)) r.Placed++;
+            foreach (var s in live) Desk.Raise(s.Window.Handle);
+            foreach (var s in states.Where(s => s.Window == null)) r.Missing.Add(s.Title);
+            Log.Write("deploy '" + g.Name + "': " + r.Placed + " of " + r.Total + " placed" +
+                      (r.Missing.Count > 0 ? ", not open: " + string.Join(", ", r.Missing) : ""));
+            return r;
+        }
+
+        public class Detected { public int Mon; public string MonName; public bool Tiled; public double Coverage; public List<Win> Windows; public int Behind; }
+
+        // What is arranged on each screen right now - meaning what you can SEE. Windows are walked
+        // from the top of the stack down, and one that is mostly hidden behind windows already
+        // counted is not part of the layout. The first version took every window on the screen:
+        // a session left open underneath a 2x2 made it five windows, overlapping, "loose", and
+        // the 2x2 was never recognised as the group it was saved as.
+        // Two or more visible windows is a layout; barely overlapping and filling most of the
+        // screen is a tiled one - what a snapped 2x2 or a side-by-side pair looks like.
+        public static List<Detected> Detect(List<Win> wins, List<Mon> mons, bool claudeOnly)
+        {
+            var res = new List<Detected>();
+            foreach (var m in mons)
+            {
+                var stack = wins.Where(w => w.Mon == m.Index && !w.Min && (!claudeOnly || w.IsClaude)).OrderBy(w => w.Z).ToList();
+                var ws = new List<Win>();
+                int behind = 0;
+                foreach (var w in stack)
+                {
+                    if (Covered(w, ws) > 0.7) { behind++; continue; }
+                    ws.Add(w);
+                    if (w.Max) { behind += stack.Count - stack.IndexOf(w) - 1; break; }   // nothing below a maximized window shows
+                }
+                ws = ws.Where(w => !w.Max).ToList();
+                if (ws.Count < 2) continue;
+                double sum = 0, overlap = 0, inside = 0;
+                foreach (var w in ws)
+                {
+                    sum += (double)w.VW * w.VH;
+                    inside += Inter(w.VX, w.VY, w.VW, w.VH, m.X, m.Y, m.W, m.H);
+                }
+                for (int i = 0; i < ws.Count; i++)
+                    for (int j = i + 1; j < ws.Count; j++)
+                        overlap += Inter(ws[i].VX, ws[i].VY, ws[i].VW, ws[i].VH, ws[j].VX, ws[j].VY, ws[j].VW, ws[j].VH);
+                var d = new Detected();
+                d.Mon = m.Index; d.MonName = m.Name;
+                d.Coverage = Math.Min(1.0, inside / ((double)m.W * m.H));
+                d.Tiled = sum > 0 && overlap / sum < 0.12 && d.Coverage > 0.55;
+                d.Windows = ws.OrderBy(w => w.VY / 200).ThenBy(w => w.VX).ToList();
+                d.Behind = behind;
+                res.Add(d);
+            }
+            return res;
+        }
+
+        // How much of a window is hidden behind the given ones, sampled on a 20x20 grid - exact
+        // union areas of many rectangles are not worth the code for a yes/no question.
+        static double Covered(Win w, List<Win> above)
+        {
+            if (above.Count == 0 || w.VW <= 0 || w.VH <= 0) return 0;
+            int hit = 0, n = 20;
+            for (int i = 0; i < n; i++)
+                for (int j = 0; j < n; j++)
+                {
+                    double px = w.VX + (i + 0.5) * w.VW / n, py = w.VY + (j + 0.5) * w.VH / n;
+                    foreach (var a in above)
+                        if (px >= a.VX && px < a.VX + a.VW && py >= a.VY && py < a.VY + a.VH) { hit++; break; }
+                }
+            return hit / (double)(n * n);
+        }
+
+        public static double Inter(int ax, int ay, int aw, int ah, int bx, int by, int bw, int bh)
+        {
+            double ix = Math.Max(0, Math.Min(ax + aw, bx + bw) - Math.Max(ax, bx));
+            double iy = Math.Max(0, Math.Min(ay + ah, by + bh) - Math.Max(ay, by));
+            return ix * iy;
+        }
+    }
+
+    // ============================================================ auto-restore
+
+    // Puts a window into its saved slot the first time it appears - not continuously, so moving
+    // a window by hand afterwards is never fought. A new window is given a couple of seconds
+    // first: the owning app positions it itself on creation, and its title often arrives late.
+    class AutoRestore
+    {
+        readonly HashSet<long> done = new HashSet<long>();
+        readonly Dictionary<long, DateTime> pending = new Dictionary<long, DateTime>();
+
+        public void Init()
+        {
+            // Windows already open when this starts are left alone, unless Claude itself has only
+            // just started - that is the "turned the PC on, opened Claude" case this exists for.
+            var started = Claude.ProcessStarted();
+            bool freshClaude = started.HasValue && (DateTime.Now - started.Value).TotalMinutes < 3;
+            foreach (var w in Desk.List(Desk.Monitors()))
+                if (!(freshClaude && w.IsClaude)) done.Add(w.Handle);
+            if (freshClaude) Log.Write("auto: Claude started " + (int)(DateTime.Now - started.Value).TotalSeconds + "s ago - its windows will be put in place");
+        }
+
+        public void Tick()
+        {
+            List<Mon> mons;
+            List<Win> open;
+            try { mons = Desk.Monitors(); open = Desk.List(mons); }
+            catch { return; }
+            var alive = new HashSet<long>(open.Select(w => w.Handle));
+            done.RemoveWhere(h => !alive.Contains(h));
+            foreach (var h in pending.Keys.Where(h => !alive.Contains(h)).ToList()) pending.Remove(h);
+
+            List<Group> groups;
+            lock (Store.Gate)
+            {
+                if (!Store.D.AutoRestore)
+                {
+                    // Switched off: everything open now counts as seen, so switching it back on
+                    // later does not suddenly yank every window across the screens.
+                    foreach (var w in open) done.Add(w.Handle);
+                    pending.Clear();
+                    return;
+                }
+                groups = Store.D.Groups.Where(g => g.Auto && g.Slots.Count > 0).ToList();
+            }
+            if (groups.Count == 0) { foreach (var w in open) done.Add(w.Handle); return; }
+
+            var titles = Claude.Titles();
+            var touched = new HashSet<Group>();
+            var now = DateTime.Now;
+            foreach (var w in open)
+            {
+                if (done.Contains(w.Handle)) continue;
+                DateTime first;
+                if (!pending.TryGetValue(w.Handle, out first)) { pending[w.Handle] = now; continue; }
+                if ((now - first).TotalSeconds < 2.5) continue;
+
+                Group hitGroup = null; Slot hitSlot = null;
+                foreach (var g in groups)
+                {
+                    foreach (var s in g.Slots)
+                    {
+                        string want = s.Title;
+                        if (!string.IsNullOrEmpty(s.SessionId) && titles.ContainsKey(s.SessionId)) want = titles[s.SessionId];
+                        bool proc = string.IsNullOrEmpty(s.Process) || string.Equals(w.Process, s.Process, StringComparison.OrdinalIgnoreCase);
+                        if (proc && (w.Title == want || w.Title == s.Title)) { hitGroup = g; hitSlot = s; break; }
+                    }
+                    if (hitSlot != null) break;
+                }
+                if (hitSlot != null)
+                {
+                    Desk.Place(w.Handle, hitSlot.X, hitSlot.Y, hitSlot.W, hitSlot.H, hitSlot.Max);
+                    touched.Add(hitGroup);
+                    done.Add(w.Handle); pending.Remove(w.Handle);
+                    Log.Write("auto: '" + w.Title + "' -> " + hitGroup.Name);
+                }
+                else if ((now - first).TotalSeconds > 30)
+                {
+                    done.Add(w.Handle); pending.Remove(w.Handle);       // never matched: not ours
+                }
+            }
+
+            // Restore the stacking of every group that just received a window.
+            foreach (var g in touched)
+            {
+                var states = Layouts.Resolve(g, open, titles, mons);
+                foreach (var s in states.Where(s => s.Window != null).OrderByDescending(s => s.Slot.Z))
+                    Desk.Raise(s.Window.Handle);
+            }
+        }
+    }
+
+    // ============================================================ on-screen preview
+
+    class Tile { public Rectangle R; public string Title; public string Sub; public bool Missing; public string Group; }
+
+    class Overlay : Form
+    {
+        static readonly List<Overlay> live = new List<Overlay>();
+        static System.Windows.Forms.Timer timer;
+        readonly Tile t;
+
+        static readonly Color Ink = Color.FromArgb(10, 10, 10);
+        static readonly Color Paper = Color.FromArgb(244, 243, 240);
+        static readonly Color Mute = Color.FromArgb(160, 159, 154);
+        static readonly Color Signal = Color.FromArgb(37, 247, 22);
+        static readonly Color Amber = Color.FromArgb(232, 170, 72);
+
+        public static void ShowTiles(List<Tile> tiles, int seconds)
+        {
+            CloseAll();
+            foreach (var t in tiles)
+            {
+                if (t.R.Width < 40 || t.R.Height < 40) continue;
+                var f = new Overlay(t);
+                live.Add(f);
+                f.Show();
+            }
+            if (timer == null)
+            {
+                timer = new System.Windows.Forms.Timer();
+                timer.Tick += delegate { timer.Stop(); CloseAll(); };
+            }
+            timer.Stop();
+            timer.Interval = seconds * 1000;
+            timer.Start();
+        }
+
+        public static void CloseAll()
+        {
+            foreach (var f in live.ToArray()) { try { f.Close(); f.Dispose(); } catch { } }
+            live.Clear();
+        }
+
+        Overlay(Tile tile)
+        {
+            t = tile;
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.Manual;
+            Bounds = t.R;
+            BackColor = Ink;
+            Opacity = 0.97;
+            DoubleBuffered = true;
+            Cursor = Cursors.Hand;
+            Click += delegate { CloseAll(); };
+        }
+
+        protected override bool ShowWithoutActivation { get { return true; } }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                cp.ExStyle |= 0x80 | 0x08000000;            // WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+                return cp;
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            var r = ClientRectangle;
+            int pad = Math.Max(14, Math.Min(r.Width, r.Height) / 22);
+
+            using (var pen = new Pen(t.Missing ? Mute : Signal, 2f))
+            {
+                if (t.Missing) pen.DashPattern = new float[] { 5f, 4f };
+                g.DrawRectangle(pen, 1, 1, r.Width - 3, r.Height - 3);
+            }
+
+            using (var mono = UiFont.Mono(11f))
+            using (var b = new SolidBrush(t.Missing ? Mute : Signal))
+                g.DrawString((t.Group ?? "").ToUpperInvariant(), mono, b, pad, pad);
+
+            float size = Math.Max(16f, Math.Min(64f, Math.Min(r.Width / 14f, r.Height / 6f)));
+            var box = new RectangleF(pad, pad, r.Width - 2 * pad, r.Height - 2 * pad);
+            using (var title = UiFont.Display(size))
+            using (var sub = UiFont.Mono(Math.Max(10f, size * 0.42f)))
+            using (var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisWord })
+            {
+                string text = UiFont.Plain(t.Title);
+                var tsz = g.MeasureString(text, title, (int)box.Width, fmt);
+                float th = Math.Min(tsz.Height, box.Height * 0.6f);
+                float subH = sub.GetHeight(g);
+                float top = box.Y + (box.Height - th - subH * 1.8f) / 2f;
+                using (var pb = new SolidBrush(t.Missing ? Mute : Paper))
+                    g.DrawString(text, title, pb, new RectangleF(box.X, top, box.Width, th), fmt);
+                using (var sb = new SolidBrush(t.Missing ? Amber : Signal))
+                    g.DrawString(t.Sub ?? "", sub, sb, new RectangleF(box.X, top + th + subH * 0.6f, box.Width, subH * 1.2f), fmt);
+            }
+        }
+    }
+
+    static class UiFont
+    {
+        static string display, mono;
+        public static Font Display(float px) { return new Font(Pick(ref display, "Geist", "Segoe UI Variable Display", "Segoe UI"), px, FontStyle.Regular, GraphicsUnit.Pixel); }
+        public static Font Mono(float px) { return new Font(Pick(ref mono, "Geist Mono", "Cascadia Mono", "Consolas"), px, FontStyle.Regular, GraphicsUnit.Pixel); }
+
+        static string Pick(ref string cached, params string[] names)
+        {
+            if (cached != null) return cached;
+            using (var fams = new InstalledFontCollection())
+            {
+                var have = new HashSet<string>(fams.Families.Select(f => f.Name), StringComparer.OrdinalIgnoreCase);
+                cached = names.FirstOrDefault(n => have.Contains(n)) ?? "Segoe UI";
+            }
+            return cached;
+        }
+
+        // GDI+ has no colour emoji - they come out as empty boxes. The browser UI shows them; the
+        // overlay drops them. Surrogate pairs, variation selector 16, zero-width joiner, and the
+        // dingbat / misc-symbol blocks.
+        public static string Plain(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var sb = new StringBuilder(s.Length);
+            foreach (char c in s)
+            {
+                int v = c;
+                if (char.IsSurrogate(c) || v == 0xFE0F || v == 0x200D || (v >= 0x2600 && v <= 0x27BF) || (v >= 0x2B00 && v <= 0x2BFF)) continue;
+                sb.Append(c);
+            }
+            return sb.ToString().Trim();
+        }
+    }
+
+    // ============================================================ loopback HTTP for the UI
+
+    class Req
+    {
+        public string Method = "", Path = "", Query = "", Body = "";
+        public Dictionary<string, string> Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        public string Q(string key)
+        {
+            foreach (var part in Query.Split('&'))
+            {
+                int i = part.IndexOf('=');
+                if (i > 0 && Uri.UnescapeDataString(part.Substring(0, i)) == key) return Uri.UnescapeDataString(part.Substring(i + 1));
+            }
+            return null;
+        }
+    }
+
+    class Resp
+    {
+        public int Status = 200; public string Type = "text/plain; charset=utf-8"; public byte[] Body = new byte[0];
+        public static Resp Text(int status, string s) { return new Resp { Status = status, Body = Encoding.UTF8.GetBytes(s) }; }
+        public static Resp Html(int status, string s) { return new Resp { Status = status, Type = "text/html; charset=utf-8", Body = Encoding.UTF8.GetBytes(s) }; }
+        public static Resp Json(int status, object o) { return new Resp { Status = status, Type = "application/json; charset=utf-8", Body = Encoding.UTF8.GetBytes(Api.Ser.Serialize(o)) }; }
+    }
+
+    // A raw socket server rather than HttpListener: HttpListener needs a URL reservation, which
+    // needs admin. Bound to 127.0.0.1 only, Host header checked (no DNS rebinding), and every
+    // API call needs the per-run token that only the URL the tray opens carries.
+    class Http
+    {
+        TcpListener lis;
+        public int Port;
+        public string Token;
+        static readonly string CRLF = "" + (char)13 + (char)10;
+
+        public void Start()
+        {
+            foreach (int p in new[] { 47391, 0 })
+            {
+                try { lis = new TcpListener(IPAddress.Loopback, p); lis.Start(); break; }
+                catch { lis = null; }
+            }
+            if (lis == null) throw new Exception("could not open a local port for the UI");
+            Port = ((IPEndPoint)lis.LocalEndpoint).Port;
+            var th = new Thread(Loop) { IsBackground = true, Name = "http" };
+            th.Start();
+        }
+
+        void Loop()
+        {
+            while (true)
+            {
+                TcpClient c;
+                try { c = lis.AcceptTcpClient(); } catch { return; }
+                ThreadPool.QueueUserWorkItem(o => Serve((TcpClient)o), c);
+            }
+        }
+
+        void Serve(TcpClient c)
+        {
+            using (c)
+            {
+                try
+                {
+                    c.ReceiveTimeout = 8000; c.SendTimeout = 8000;
+                    var s = c.GetStream();
+                    var buf = new MemoryStream();
+                    var chunk = new byte[8192];
+                    int end = -1;
+                    while (end < 0)
+                    {
+                        int n = s.Read(chunk, 0, chunk.Length);
+                        if (n <= 0) return;
+                        buf.Write(chunk, 0, n);
+                        if (buf.Length > 65536) return;
+                        end = Find(buf.GetBuffer(), (int)buf.Length);
+                    }
+                    byte[] all = buf.ToArray();
+                    string head = Encoding.ASCII.GetString(all, 0, end);
+                    var lines = head.Split(new[] { CRLF }, StringSplitOptions.None);
+                    var first = lines[0].Split(' ');
+                    if (first.Length < 2) return;
+                    var req = new Req { Method = first[0] };
+                    string target = first[1];
+                    int qi = target.IndexOf('?');
+                    req.Path = qi >= 0 ? target.Substring(0, qi) : target;
+                    req.Query = qi >= 0 ? target.Substring(qi + 1) : "";
+                    for (int i = 1; i < lines.Length; i++)
+                    {
+                        int ci = lines[i].IndexOf(':');
+                        if (ci > 0) req.Headers[lines[i].Substring(0, ci).Trim()] = lines[i].Substring(ci + 1).Trim();
+                    }
+                    int clen = 0;
+                    string cl;
+                    if (req.Headers.TryGetValue("Content-Length", out cl)) int.TryParse(cl, out clen);
+                    if (clen > 2000000) { Write(s, Resp.Text(413, "too large")); return; }
+                    var body = new MemoryStream();
+                    body.Write(all, end + 4, all.Length - end - 4);
+                    while (body.Length < clen)
+                    {
+                        int n = s.Read(chunk, 0, Math.Min(chunk.Length, clen - (int)body.Length));
+                        if (n <= 0) break;
+                        body.Write(chunk, 0, n);
+                    }
+                    req.Body = Encoding.UTF8.GetString(body.ToArray());
+                    Resp resp;
+                    try { resp = Api.Route(req, this); }
+                    catch (Exception e)
+                    {
+                        Log.Write("http: " + req.Method + " " + req.Path + " failed - " + e.Message);
+                        resp = Resp.Json(500, new Dictionary<string, object> { { "error", e.Message } });
+                    }
+                    Write(s, resp);
+                }
+                catch { }
+            }
+        }
+
+        static int Find(byte[] b, int len)
+        {
+            for (int i = 0; i + 3 < len; i++)
+                if (b[i] == 13 && b[i + 1] == 10 && b[i + 2] == 13 && b[i + 3] == 10) return i;
+            return -1;
+        }
+
+        void Write(Stream s, Resp r)
+        {
+            var sb = new StringBuilder();
+            sb.Append("HTTP/1.1 ").Append(r.Status).Append(' ').Append(Reason(r.Status)).Append(CRLF);
+            sb.Append("Content-Type: ").Append(r.Type).Append(CRLF);
+            sb.Append("Content-Length: ").Append(r.Body.Length).Append(CRLF);
+            sb.Append("Cache-Control: no-store").Append(CRLF);
+            sb.Append("X-Content-Type-Options: nosniff").Append(CRLF);
+            sb.Append("Referrer-Policy: no-referrer").Append(CRLF);
+            sb.Append("X-Frame-Options: DENY").Append(CRLF);
+            if (r.Type.StartsWith("text/html"))
+                sb.Append("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'").Append(CRLF);
+            sb.Append("Connection: close").Append(CRLF).Append(CRLF);
+            var h = Encoding.ASCII.GetBytes(sb.ToString());
+            s.Write(h, 0, h.Length);
+            s.Write(r.Body, 0, r.Body.Length);
+            s.Flush();
+        }
+
+        static string Reason(int s)
+        {
+            switch (s) { case 200: return "OK"; case 403: return "Forbidden"; case 404: return "Not Found"; case 409: return "Conflict"; case 413: return "Payload Too Large"; default: return "Error"; }
+        }
+    }
+
+    // ============================================================ the API the UI talks to
+
+    static class Api
+    {
+        public static readonly JavaScriptSerializer Ser = new JavaScriptSerializer { MaxJsonLength = 16 * 1024 * 1024 };
+        static string indexHtml;
+
+        static string Index()
+        {
+            if (indexHtml != null) return indexHtml;
+            using (var s = Assembly.GetExecutingAssembly().GetManifestResourceStream("WindowGroups.index.html"))
+            using (var r = new StreamReader(s, Encoding.UTF8))
+                indexHtml = r.ReadToEnd();
+            return indexHtml;
+        }
+
+        public static Resp Route(Req r, Http h)
+        {
+            string host;
+            r.Headers.TryGetValue("Host", out host);
+            if (host != "127.0.0.1:" + h.Port && host != "localhost:" + h.Port) return Resp.Text(403, "forbidden");
+
+            if (r.Method == "GET" && r.Path == "/")
+            {
+                if (r.Q("t") != h.Token)
+                    return Resp.Html(403, "<!doctype html><title>Window Groups</title><body style=\"background:#0a0a0a;color:#a09f9a;font:14px system-ui;padding:40px\">Open Window Groups from its icon in the tray.</body>");
+                return Resp.Html(200, Index().Replace("__TOKEN__", h.Token));
+            }
+            if (!r.Path.StartsWith("/api/")) return Resp.Text(404, "not found");
+
+            string tok;
+            r.Headers.TryGetValue("X-Token", out tok);
+            if (tok != h.Token) return Resp.Json(403, new Dictionary<string, object> { { "error", "forbidden" } });
+
+            if (r.Method == "GET" && r.Path == "/api/state") return Resp.Json(200, State());
+            if (r.Method == "POST" && r.Path == "/api/action")
+            {
+                var body = Ser.DeserializeObject(string.IsNullOrEmpty(r.Body) ? "{}" : r.Body) as Dictionary<string, object>;
+                return Action(body ?? new Dictionary<string, object>());
+            }
+            return Resp.Text(404, "not found");
+        }
+
+        static Dictionary<string, object> O() { return new Dictionary<string, object>(); }
+
+        static object State()
+        {
+            var mons = Desk.Monitors();
+            var wins = Desk.List(mons);
+            var titles = Claude.Titles();
+            var res = O();
+
+            res["monitors"] = mons.Select(m => (object)new Dictionary<string, object> {
+                { "i", m.Index }, { "name", m.Name }, { "x", m.X }, { "y", m.Y }, { "w", m.W }, { "h", m.H }, { "primary", m.Primary } }).ToList();
+
+            res["windows"] = wins.Select(w => (object)new Dictionary<string, object> {
+                { "h", w.Handle.ToString() }, { "title", w.Title }, { "process", w.Process }, { "claude", w.IsClaude },
+                { "x", w.X }, { "y", w.Y }, { "w", w.W }, { "h2", w.H },
+                { "vx", w.VX }, { "vy", w.VY }, { "vw", w.VW }, { "vh", w.VH },
+                { "min", w.Min }, { "max", w.Max }, { "z", w.Z }, { "mon", w.Mon } }).ToList();
+
+            var groups = new List<object>();
+            var savedSets = new List<KeyValuePair<string, HashSet<long>>>();
+            lock (Store.Gate)
+            {
+                foreach (var g in Store.D.Groups)
+                {
+                    var states = Layouts.Resolve(g, wins, titles, mons);
+                    savedSets.Add(new KeyValuePair<string, HashSet<long>>(g.Name,
+                        new HashSet<long>(states.Where(s => s.Window != null).Select(s => s.Window.Handle))));
+                    groups.Add(new Dictionary<string, object> {
+                        { "id", g.Id }, { "name", g.Name }, { "auto", g.Auto }, { "saved", g.Saved },
+                        { "open", states.Count(s => s.Window != null) },
+                        { "slots", states.Select(s => (object)new Dictionary<string, object> {
+                            { "i", s.Index }, { "title", s.Title }, { "savedTitle", s.Slot.Title }, { "sessionId", s.Slot.SessionId },
+                            { "process", s.Slot.Process },
+                            { "x", s.Slot.X }, { "y", s.Slot.Y }, { "w", s.Slot.W }, { "h2", s.Slot.H }, { "max", s.Slot.Max }, { "z", s.Slot.Z },
+                            { "mon", s.Mon }, { "open", s.Window != null }, { "h", s.Window != null ? s.Window.Handle.ToString() : null } }).ToList() } });
+                }
+                res["settings"] = new Dictionary<string, object> { { "autoRestore", Store.D.AutoRestore }, { "startWithWindows", Startup.On } };
+            }
+            res["groups"] = groups;
+
+            Func<bool, List<object>> detected = claudeOnly => Layouts.Detect(wins, mons, claudeOnly).Select(d =>
+            {
+                var set = new HashSet<long>(d.Windows.Select(w => w.Handle));
+                var match = savedSets.FirstOrDefault(kv => kv.Value.SetEquals(set));
+                return (object)new Dictionary<string, object> {
+                    { "mon", d.Mon }, { "monName", d.MonName }, { "tiled", d.Tiled }, { "coverage", Math.Round(d.Coverage, 2) }, { "behind", d.Behind },
+                    { "handles", d.Windows.Select(w => (object)w.Handle.ToString()).ToList() },
+                    { "savedAs", match.Key } };
+            }).ToList();
+            res["detected"] = detected(true);
+            res["detectedAll"] = detected(false);
+            res["claudeFound"] = wins.Any(w => w.IsClaude) || titles.Count > 0;
+            res["version"] = "1.0.0";
+            return res;
+        }
+
+        static string S(Dictionary<string, object> b, string k) { object v; return b.TryGetValue(k, out v) && v != null ? v.ToString() : null; }
+        static bool B(Dictionary<string, object> b, string k) { object v; return b.TryGetValue(k, out v) && v is bool && (bool)v; }
+        static int I(Dictionary<string, object> b, string k) { object v; return b.TryGetValue(k, out v) && v != null ? Convert.ToInt32(v) : -1; }
+        static List<string> L(Dictionary<string, object> b, string k)
+        {
+            object v;
+            var res = new List<string>();
+            if (b.TryGetValue(k, out v) && v is System.Collections.IEnumerable && !(v is string))
+                foreach (var o in (System.Collections.IEnumerable)v) if (o != null) res.Add(o.ToString());
+            return res;
+        }
+        static Resp Ok(string msg) { return Resp.Json(200, new Dictionary<string, object> { { "ok", true }, { "message", msg } }); }
+        static Resp Fail(int status, string msg) { return Resp.Json(status, new Dictionary<string, object> { { "error", msg } }); }
+
+        static Resp Action(Dictionary<string, object> b)
+        {
+            string op = S(b, "op") ?? "";
+            switch (op)
+            {
+                case "deploy":
+                {
+                    var ids = L(b, "ids");
+                    List<Group> gs;
+                    lock (Store.Gate) gs = Store.D.Groups.Where(g => ids.Contains(g.Id)).ToList();
+                    if (gs.Count == 0) return Fail(404, "No such group.");
+                    var parts = new List<string>();
+                    foreach (var g in gs)
+                    {
+                        var r = Layouts.Deploy(g);
+                        parts.Add(r.Group + " " + r.Placed + "/" + r.Total + (r.Missing.Count > 0 ? " (not open: " + string.Join(", ", r.Missing.Select(UiFont.Plain)) + ")" : ""));
+                    }
+                    return Ok("Deployed " + string.Join(" - ", parts));
+                }
+                case "save":
+                {
+                    string name = (S(b, "name") ?? "").Trim();
+                    if (name == "") return Fail(400, "Give the group a name.");
+                    var handles = new HashSet<string>(L(b, "handles"));
+                    var mons = Desk.Monitors();
+                    var wins = Desk.List(mons).Where(w => handles.Contains(w.Handle.ToString())).ToList();
+                    if (wins.Count == 0) return Fail(400, "None of those windows are open any more.");
+                    var slots = Layouts.Snapshot(wins);
+                    lock (Store.Gate)
+                    {
+                        var existing = Store.D.Groups.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase));
+                        if (existing != null && !B(b, "replace")) return Fail(409, "A group called " + existing.Name + " already exists.");
+                        var grp = existing ?? new Group { Id = Store.NewId() };
+                        grp.Name = name; grp.Slots = slots; grp.Saved = DateTime.Now.ToString("dd MMM HH:mm");
+                        if (existing == null) Store.D.Groups.Add(grp);
+                        Store.Save();
+                        Log.Write("saved '" + name + "' with " + slots.Count + " window(s)");
+                        return Resp.Json(200, new Dictionary<string, object> { { "ok", true }, { "id", grp.Id }, { "message", "Saved " + name + " - " + slots.Count + " window(s)." } });
+                    }
+                }
+                case "update":
+                {
+                    lock (Store.Gate)
+                    {
+                        var g = Store.Find(S(b, "id"));
+                        if (g == null) return Fail(404, "No such group.");
+                        var mons = Desk.Monitors();
+                        var states = Layouts.Resolve(g, Desk.List(mons), Claude.Titles(), mons);
+                        int n = 0;
+                        foreach (var s in states.Where(s => s.Window != null))
+                        {
+                            var w = s.Window;
+                            s.Slot.X = w.X; s.Slot.Y = w.Y; s.Slot.W = w.W; s.Slot.H = w.H; s.Slot.Max = w.Max; s.Slot.Z = w.Z;
+                            s.Slot.Title = w.Title; n++;
+                        }
+                        g.Saved = DateTime.Now.ToString("dd MMM HH:mm");
+                        Store.Save();
+                        int missing = states.Count - n;
+                        return Ok("Updated " + g.Name + " from where its windows are now" + (missing > 0 ? " - " + missing + " not open, kept as they were." : "."));
+                    }
+                }
+                case "rename":
+                {
+                    string name = (S(b, "name") ?? "").Trim();
+                    if (name == "") return Fail(400, "A group needs a name.");
+                    lock (Store.Gate)
+                    {
+                        var g = Store.Find(S(b, "id"));
+                        if (g == null) return Fail(404, "No such group.");
+                        if (Store.D.Groups.Any(x => x != g && string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase)))
+                            return Fail(409, "Another group is already called " + name + ".");
+                        g.Name = name; Store.Save();
+                        return Ok("Renamed to " + name + ".");
+                    }
+                }
+                case "delete":
+                {
+                    lock (Store.Gate)
+                    {
+                        var g = Store.Find(S(b, "id"));
+                        if (g == null) return Fail(404, "No such group.");
+                        Store.D.Groups.Remove(g); Store.Save();
+                        Log.Write("deleted '" + g.Name + "'");
+                        return Ok("Deleted " + g.Name + ". The windows themselves were not touched.");
+                    }
+                }
+                case "auto":
+                {
+                    lock (Store.Gate)
+                    {
+                        var g = Store.Find(S(b, "id"));
+                        if (g == null) return Fail(404, "No such group.");
+                        g.Auto = B(b, "on"); Store.Save();
+                        return Ok(g.Name + (g.Auto ? " will put itself back when its windows open." : " only moves when you deploy it."));
+                    }
+                }
+                case "replace":
+                {
+                    // Fill a slot with a different open window. The slot keeps its place and size;
+                    // only who sits in it changes.
+                    var mons = Desk.Monitors();
+                    var w = Desk.List(mons).FirstOrDefault(x => x.Handle.ToString() == S(b, "handle"));
+                    if (w == null) return Fail(404, "That window is not open any more.");
+                    lock (Store.Gate)
+                    {
+                        var g = Store.Find(S(b, "id"));
+                        int i = I(b, "index");
+                        if (g == null || i < 0 || i >= g.Slots.Count) return Fail(404, "No such slot.");
+                        var snap = Layouts.Snapshot(new[] { w })[0];
+                        var s = g.Slots[i];
+                        s.Title = snap.Title; s.SessionId = snap.SessionId; s.Process = snap.Process;
+                        g.Saved = DateTime.Now.ToString("dd MMM HH:mm");
+                        Store.Save();
+                        Log.Write("slot " + i + " of '" + g.Name + "' now holds '" + w.Title + "'");
+                        return Ok(UiFont.Plain(w.Title) + " now holds that place in " + g.Name + ".");
+                    }
+                }
+                case "removeSlot":
+                {
+                    lock (Store.Gate)
+                    {
+                        var g = Store.Find(S(b, "id"));
+                        int i = I(b, "index");
+                        if (g == null || i < 0 || i >= g.Slots.Count) return Fail(404, "No such slot.");
+                        string t = g.Slots[i].Title;
+                        g.Slots.RemoveAt(i); Store.Save();
+                        return Ok("Removed " + UiFont.Plain(t) + " from " + g.Name + ".");
+                    }
+                }
+                case "overlay":
+                {
+                    var tiles = new List<Tile>();
+                    lock (Store.Gate)
+                    {
+                        var g = Store.Find(S(b, "id"));
+                        if (g == null) return Fail(404, "No such group.");
+                        var mons = Desk.Monitors();
+                        foreach (var s in Layouts.Resolve(g, Desk.List(mons), Claude.Titles(), mons))
+                            tiles.Add(new Tile {
+                                R = Inset(s.Slot.X, s.Slot.Y, s.Slot.W, s.Slot.H), Title = s.Title, Group = g.Name, Missing = s.Window == null,
+                                Sub = s.Window == null ? "NOT OPEN" : "OPEN  " + s.Slot.W + " x " + s.Slot.H });
+                    }
+                    App.OnUi(() => Overlay.ShowTiles(tiles, 6));
+                    return Ok("Showing it on your screens for 6 seconds. Click any tile to close.");
+                }
+                case "overlayHandles":
+                {
+                    var handles = new HashSet<string>(L(b, "handles"));
+                    string label = S(b, "label") ?? "On screen";
+                    var mons = Desk.Monitors();
+                    var tiles = Desk.List(mons).Where(w => handles.Contains(w.Handle.ToString())).Select(w => new Tile {
+                        R = new Rectangle(w.VX, w.VY, w.VW, w.VH), Title = w.Title, Group = label, Sub = "OPEN  " + w.W + " x " + w.H }).ToList();
+                    App.OnUi(() => Overlay.ShowTiles(tiles, 6));
+                    return Ok("Showing them on your screens for 6 seconds.");
+                }
+                case "setting":
+                {
+                    string key = S(b, "key");
+                    bool on = B(b, "value");
+                    if (key == "autoRestore") { lock (Store.Gate) { Store.D.AutoRestore = on; Store.Save(); } return Ok(on ? "Groups will put themselves back as their windows open." : "Auto-restore is off. Deploy groups by hand."); }
+                    if (key == "startWithWindows") { Startup.Set(on); return Ok(on ? "Window Groups starts with Windows." : "Window Groups no longer starts with Windows."); }
+                    return Fail(400, "Unknown setting.");
+                }
+                default:
+                    return Fail(400, "Unknown action.");
+            }
+        }
+
+        // A window rect includes an invisible resize border of about 7px each side; drawing the
+        // preview on the visible part looks right.
+        static Rectangle Inset(int x, int y, int w, int h)
+        {
+            return new Rectangle(x + 7, y, Math.Max(40, w - 14), Math.Max(40, h - 7));
+        }
+    }
+
+    // ============================================================ start with Windows
+
+    static class Startup
+    {
+        const string RunKey = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+        const string Name = "Window Groups";
+
+        public static bool On
+        {
+            get
+            {
+                using (var k = Registry.CurrentUser.OpenSubKey(RunKey))
+                    return k != null && k.GetValue(Name) != null;
+            }
+        }
+
+        public static void Set(bool on)
+        {
+            using (var k = Registry.CurrentUser.CreateSubKey(RunKey))
+            {
+                if (on) k.SetValue(Name, "\"" + Application.ExecutablePath + "\" --tray");
+                else k.DeleteValue(Name, false);
+            }
+        }
+    }
+
+    // ============================================================ tray
+
+    class DarkColors : ProfessionalColorTable
+    {
+        static readonly Color Bg = Color.FromArgb(14, 14, 16), Hover = Color.FromArgb(30, 30, 33), Line = Color.FromArgb(44, 44, 48);
+        public override Color ToolStripDropDownBackground { get { return Bg; } }
+        public override Color ImageMarginGradientBegin { get { return Bg; } }
+        public override Color ImageMarginGradientMiddle { get { return Bg; } }
+        public override Color ImageMarginGradientEnd { get { return Bg; } }
+        public override Color MenuBorder { get { return Line; } }
+        public override Color MenuItemBorder { get { return Hover; } }
+        public override Color MenuItemSelected { get { return Hover; } }
+        public override Color MenuItemSelectedGradientBegin { get { return Hover; } }
+        public override Color MenuItemSelectedGradientEnd { get { return Hover; } }
+        public override Color MenuItemPressedGradientBegin { get { return Hover; } }
+        public override Color MenuItemPressedGradientEnd { get { return Hover; } }
+        public override Color SeparatorDark { get { return Line; } }
+        public override Color SeparatorLight { get { return Bg; } }
+        public override Color CheckBackground { get { return Bg; } }
+        public override Color CheckSelectedBackground { get { return Hover; } }
+        public override Color CheckPressedBackground { get { return Hover; } }
+    }
+
+    class DarkRenderer : ToolStripProfessionalRenderer
+    {
+        public DarkRenderer() : base(new DarkColors()) { RoundedEdges = false; }
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+        {
+            e.TextColor = e.Item.Enabled ? Color.FromArgb(244, 243, 240) : Color.FromArgb(111, 110, 106);
+            base.OnRenderItemText(e);
+        }
+        protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+        {
+            var r = e.ImageRectangle;
+            using (var b = new SolidBrush(Color.FromArgb(37, 247, 22)))
+                e.Graphics.FillRectangle(b, r.X + r.Width / 2 - 3, r.Y + r.Height / 2 - 3, 7, 7);
+        }
+    }
+
+    class Tray
+    {
+        readonly NotifyIcon icon;
+        readonly ContextMenuStrip menu;
+
+        public Tray()
+        {
+            menu = new ContextMenuStrip { Renderer = new DarkRenderer(), ShowImageMargin = true, Font = new Font("Segoe UI", 9.5f) };
+            menu.Opening += delegate (object s, System.ComponentModel.CancelEventArgs e) { Build(); e.Cancel = false; };
+            icon = new NotifyIcon { Icon = AppIcon.Make(), Text = "Window Groups", Visible = true, ContextMenuStrip = menu };
+            icon.MouseClick += delegate (object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) App.OpenUi(); };
+            Build();
+        }
+
+        void Build()
+        {
+            menu.Items.Clear();
+            var open = new ToolStripMenuItem("Open Window Groups") { Font = new Font("Segoe UI Semibold", 9.5f) };
+            open.Click += delegate { App.OpenUi(); };
+            menu.Items.Add(open);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("DEPLOY") { Enabled = false, Font = new Font("Segoe UI", 8f) });
+            List<Group> groups;
+            lock (Store.Gate) groups = Store.D.Groups.ToList();
+            if (groups.Count == 0) menu.Items.Add(new ToolStripMenuItem("No groups yet") { Enabled = false });
+            foreach (var g in groups)
+            {
+                var id = g.Id;
+                var item = new ToolStripMenuItem(UiFont.Plain(g.Name) + "    " + g.Slots.Count);
+                item.Click += delegate
+                {
+                    Group grp;
+                    lock (Store.Gate) grp = Store.Find(id);
+                    if (grp == null) return;
+                    var r = Layouts.Deploy(grp);
+                    icon.ShowBalloonTip(2500, UiFont.Plain(grp.Name), r.Placed + " of " + r.Total + " placed" +
+                        (r.Missing.Count > 0 ? " - not open: " + string.Join(", ", r.Missing.Select(UiFont.Plain)) : ""), ToolTipIcon.None);
+                };
+                menu.Items.Add(item);
+            }
+            menu.Items.Add(new ToolStripSeparator());
+            bool auto;
+            lock (Store.Gate) auto = Store.D.AutoRestore;
+            var autoItem = new ToolStripMenuItem("Put groups back when windows open") { Checked = auto };
+            autoItem.Click += delegate { lock (Store.Gate) { Store.D.AutoRestore = !Store.D.AutoRestore; Store.Save(); } };
+            menu.Items.Add(autoItem);
+            var start = new ToolStripMenuItem("Start with Windows") { Checked = Startup.On };
+            start.Click += delegate { Startup.Set(!Startup.On); };
+            menu.Items.Add(start);
+            menu.Items.Add(new ToolStripSeparator());
+            var quit = new ToolStripMenuItem("Exit");
+            quit.Click += delegate { icon.Visible = false; Overlay.CloseAll(); Application.Exit(); };
+            menu.Items.Add(quit);
+        }
+
+        public void Hide() { icon.Visible = false; }
+    }
+
+    static class AppIcon
+    {
+        // Four tiles; the top-left one lit. Drawn rather than shipped so the tray icon is crisp at
+        // any scale.
+        public static Bitmap Draw(int px)
+        {
+            var bmp = new Bitmap(px, px);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.SmoothingMode = SmoothingMode.None;
+                g.Clear(Color.Transparent);
+                float gap = Math.Max(1f, px / 12f), cell = (px - gap * 3) / 2f;
+                using (var lit = new SolidBrush(Color.FromArgb(37, 247, 22)))
+                using (var paper = new SolidBrush(Color.FromArgb(244, 243, 240)))
+                {
+                    g.FillRectangle(lit, gap, gap, cell, cell);
+                    g.FillRectangle(paper, gap * 2 + cell, gap, cell, cell);
+                    g.FillRectangle(paper, gap, gap * 2 + cell, cell, cell);
+                    g.FillRectangle(paper, gap * 2 + cell, gap * 2 + cell, cell, cell);
+                }
+            }
+            return bmp;
+        }
+
+        public static Icon Make()
+        {
+            using (var bmp = Draw(32))
+            {
+                IntPtr h = bmp.GetHicon();
+                var ic = (Icon)Icon.FromHandle(h).Clone();
+                N.DestroyIcon(h);
+                return ic;
+            }
+        }
+    }
+
+    // ============================================================ app
+
+    static class App
+    {
+        public static Control Ui;
+        public static Http Server;
+        public static Tray TrayIcon;
+
+        public static void OnUi(Action a)
+        {
+            if (Ui == null) return;
+            if (Ui.InvokeRequired) Ui.BeginInvoke(a); else a();
+        }
+
+        // The UI is a web page in a chromeless browser window (Edge's --app mode, Chrome as a
+        // fallback), with its own profile folder so it never touches anyone's browsing.
+        public static void OpenUi()
+        {
+            var existing = Desk.FindUi();
+            if (existing != IntPtr.Zero)
+            {
+                if (N.IsIconic(existing)) N.ShowWindow(existing, N.SW_RESTORE);
+                N.SetForegroundWindow(existing);
+                return;
+            }
+            string url = "http://127.0.0.1:" + Server.Port + "/?t=" + Server.Token;
+            string browser = FindBrowser();
+            try
+            {
+                if (browser != null)
+                {
+                    string profile = Path.Combine(Store.Dir, "ui");
+                    Process.Start(new ProcessStartInfo(browser,
+                        "--app=\"" + url + "\" --user-data-dir=\"" + profile + "\" --no-first-run --no-default-browser-check --window-size=1380,900")
+                        { UseShellExecute = false });
+                }
+                else Process.Start(url);
+            }
+            catch (Exception e) { Log.Write("ui: could not open - " + e.Message); }
+        }
+
+        static string FindBrowser()
+        {
+            var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            var c = new[] {
+                Path.Combine(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
+                Path.Combine(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
+                Path.Combine(pf, "Google", "Chrome", "Application", "chrome.exe"),
+                Path.Combine(pf86, "Google", "Chrome", "Application", "chrome.exe"),
+                Path.Combine(local, "Google", "Chrome", "Application", "chrome.exe") };
+            return c.FirstOrDefault(File.Exists);
+        }
+
+        static string NewToken()
+        {
+            var b = new byte[24];
+            using (var rng = new RNGCryptoServiceProvider()) rng.GetBytes(b);
+            return BitConverter.ToString(b).Replace("-", "").ToLowerInvariant();
+        }
+
+        [STAThread]
+        static void Main(string[] args)
+        {
+            // Physical pixels everywhere, on every screen. Must come before any window exists.
+            try { if (!N.SetProcessDpiAwarenessContext(new IntPtr(-4))) N.SetProcessDPIAware(); }
+            catch { try { N.SetProcessDPIAware(); } catch { } }
+
+            bool trayOnly = args.Any(a => string.Equals(a, "--tray", StringComparison.OrdinalIgnoreCase));
+            bool created;
+            var mutex = new Mutex(true, "Local\\WindowGroups.Single", out created);
+            if (!created)
+            {
+                // Already running: bring its window forward instead of starting a second copy.
+                try { EventWaitHandle.OpenExisting("Local\\WindowGroups.Show").Set(); } catch { }
+                return;
+            }
+            var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\WindowGroups.Show");
+
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.ThreadException += (s, e) => Log.Write("ui thread: " + e.Exception);
+            AppDomain.CurrentDomain.UnhandledException += (s, e) => Log.Write("fatal: " + e.ExceptionObject);
+
+            Directory.CreateDirectory(Store.Dir);
+            bool firstRun = !File.Exists(Store.FilePath);
+            Store.Load();
+            if (firstRun) { try { Startup.Set(true); } catch { } Store.Save(); }
+
+            Ui = new Control();
+            var forceHandle = Ui.Handle;
+
+            Server = new Http { Token = NewToken() };
+            try { Server.Start(); }
+            catch (Exception e)
+            {
+                Log.Write("fatal: " + e.Message);
+                MessageBox.Show("Window Groups could not start: " + e.Message, "Window Groups");
+                return;
+            }
+            Log.Write("started" + (trayOnly ? " in the tray" : "") + ", port " + Server.Port + ", " + Store.D.Groups.Count + " group(s)");
+
+            TrayIcon = new Tray();
+            var auto = new AutoRestore();
+            auto.Init();
+            var tick = new System.Windows.Forms.Timer { Interval = 1500 };
+            tick.Tick += delegate { try { auto.Tick(); } catch (Exception e) { Log.Write("auto: " + e.Message); } };
+            tick.Start();
+
+            var listener = new Thread(() => { while (true) { showEvent.WaitOne(); OnUi(OpenUi); } }) { IsBackground = true };
+            listener.Start();
+
+            if (!trayOnly) OpenUi();
+            Application.Run();
+            TrayIcon.Hide();
+            GC.KeepAlive(mutex);
+        }
+    }
+}

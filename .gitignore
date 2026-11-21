@@ -1,0 +1,4 @@
+# Build output - the exe is published as a release, not committed.
+dist/
+*.tmp
+__pycache__/
