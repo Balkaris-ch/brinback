@@ -33,13 +33,14 @@ using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
+using Interop.UIAutomationClient;
 
 [assembly: AssemblyTitle("Window Groups")]
 [assembly: AssemblyDescription("Save window layouts. Bring them back.")]
 [assembly: AssemblyProduct("Window Groups")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyVersion("1.4.0.0")]
-[assembly: AssemblyFileVersion("1.4.0.0")]
+[assembly: AssemblyVersion("1.5.0.0")]
+[assembly: AssemblyFileVersion("1.5.0.0")]
 
 namespace WindowGroups
 {
@@ -401,8 +402,10 @@ namespace WindowGroups
         // Windows only lets the program the user is working in change the foreground window. A
         // tapped Alt, plus briefly sharing input with the current foreground thread, is the
         // well-worn way to be allowed to - and it is checked, never assumed.
-        static bool Front(IntPtr h)
+        internal static bool Front(IntPtr h)
         {
+            // Already in front: no Alt tap. Alt on the focused window opens its menu mode, and
+            // that swallows the next shortcut (found when Win+Z did nothing after a deploy).
             if (N.GetForegroundWindow() == h) return true;
             uint fg = N.GetWindowThreadProcessId(N.GetForegroundWindow(), IntPtr.Zero), me = N.GetCurrentThreadId();
             Tap(VK_ALT);
@@ -427,7 +430,9 @@ namespace WindowGroups
             N.SendInput((uint)seq.Length, seq, Marshal.SizeOf(typeof(N.INPUT)));
         }
 
-        static void Tap(ushort vk)
+        internal static void ComboPlain(ushort mod, ushort key) { Combo(mod, key, false); }
+
+        internal static void Tap(ushort vk)
         {
             var seq = new[] { KeyIn(vk, false, false), KeyIn(vk, true, false) };
             N.SendInput((uint)seq.Length, seq, Marshal.SizeOf(typeof(N.INPUT)));
@@ -459,6 +464,244 @@ namespace WindowGroups
             var li = new N.LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf(typeof(N.LASTINPUTINFO)) };
             if (!N.GetLastInputInfo(ref li)) return 0;
             return unchecked(N.GetTickCount() - li.dwTime) / 1000.0;
+        }
+    }
+
+    // ============================================================ real Windows snap groups
+
+    // A Snap Group - what the taskbar and Alt+Tab show as one "Group" and bring back together -
+    // forms only when windows are snapped through Snap Layouts and Snap Assist. Win+Arrow on
+    // each window puts them in exactly the right places, but they stay strangers to each other:
+    // that is how a deployed group ended up snapped yet missing from the taskbar's group list.
+    //
+    // So this does what a person does: Win+Z on the first window, press the zone of the layout
+    // that matches the saved one, then pick each remaining window in Snap Assist. Both are read
+    // through UI Automation, so nothing is guessed:
+    //  - the layout is chosen by the shape of its zones - not by its number, which shifts with
+    //    the suggestions Windows puts first, and not by its name, which changes with the language;
+    //  - which zone Snap Assist is filling is read from where its window list sits;
+    //  - a window is picked by invoking its thumbnail, matched on the window's title; the Close
+    //    button on each thumbnail is never touched;
+    //  - Win+Z is only sent while the window being grouped is the one in front, and Escape only
+    //    while the flyout or Snap Assist is.
+    // Anything that does not work out is reported, and Deploy snaps those windows one by one.
+    static class SnapGroups
+    {
+        const string Host = "XamlExplorerHostIslandWindow";
+        const int UIA_Button = 50000, UIA_ListItem = 50007, UIA_Invoke = 10000;
+        const ushort VK_LWIN = 0x5B, VK_Z = 0x5A, VK_ESC = 0x1B;
+
+        static IUIAutomation ua;
+        static IUIAutomation Ua
+        {
+            get
+            {
+                if (ua == null) ua = (IUIAutomation)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("ff48dba4-60ef-4201-aa87-54103eef594e")));
+                return ua;
+            }
+        }
+
+        public class Box { public double X, Y, W, H; }
+
+        // A slot as fractions of its screen's work area.
+        public static Box Rel(Slot s, Mon m)
+        {
+            return new Box { X = (s.X - m.WX) / (double)m.WW, Y = (s.Y - m.WY) / (double)m.WH, W = s.W / (double)m.WW, H = s.H / (double)m.WH };
+        }
+
+        static double Err(Box a, Box b)
+        {
+            return Math.Abs(a.X + a.W / 2 - b.X - b.W / 2) + Math.Abs(a.Y + a.H / 2 - b.Y - b.H / 2) + Math.Abs(a.W - b.W) + Math.Abs(a.H - b.H);
+        }
+
+        // These windows fill their screen the way a Snap Layout does: two to four of them, none
+        // maximized, together covering the work area with next to no overlap.
+        public static bool LooksLikeLayout(List<Slot> slots, Mon m)
+        {
+            if (m == null || slots.Count < 2 || slots.Count > 4 || slots.Any(s => s.Max)) return false;
+            var rs = slots.Select(s => new N.RECT {
+                L = Math.Max(s.X, m.WX), T = Math.Max(s.Y, m.WY),
+                R = Math.Min(s.X + s.W, m.WX + m.WW), B = Math.Min(s.Y + s.H, m.WY + m.WH) }).ToList();
+            if (rs.Any(r => r.R <= r.L || r.B <= r.T)) return false;
+            for (int i = 0; i < rs.Count; i++)
+                for (int j = i + 1; j < rs.Count; j++)
+                {
+                    long ix = Math.Max(0, Math.Min(rs[i].R, rs[j].R) - Math.Max(rs[i].L, rs[j].L));
+                    long iy = Math.Max(0, Math.Min(rs[i].B, rs[j].B) - Math.Max(rs[i].T, rs[j].T));
+                    long small = Math.Min((long)(rs[i].R - rs[i].L) * (rs[i].B - rs[i].T), (long)(rs[j].R - rs[j].L) * (rs[j].B - rs[j].T));
+                    if (ix * iy > small * 0.06) return false;
+                }
+            // Area covered, counted on the grid the rectangles' own edges make.
+            var xs = rs.SelectMany(r => new[] { r.L, r.R }).Distinct().OrderBy(v => v).ToList();
+            var ys = rs.SelectMany(r => new[] { r.T, r.B }).Distinct().OrderBy(v => v).ToList();
+            long cover = 0;
+            for (int a = 0; a + 1 < xs.Count; a++)
+                for (int b = 0; b + 1 < ys.Count; b++)
+                {
+                    int cx = (xs[a] + xs[a + 1]) / 2, cy = (ys[b] + ys[b + 1]) / 2;
+                    if (rs.Any(r => cx >= r.L && cx < r.R && cy >= r.T && cy < r.B)) cover += (long)(xs[a + 1] - xs[a]) * (ys[b + 1] - ys[b]);
+                }
+            return cover >= (long)m.WW * m.WH * 0.9;
+        }
+
+        // Snapped, and where the slot says (within a few percent of the screen).
+        public static bool InPlace(long handle, Slot s, Mon m)
+        {
+            var hw = new IntPtr(handle);
+            if (!N.IsArranged(hw)) return false;
+            N.RECT r; N.GetWindowRect(hw, out r);
+            double tx = m.WW * 0.03, ty = m.WH * 0.03;
+            return Math.Abs(r.L - s.X) < tx && Math.Abs(r.T - s.Y) < ty && Math.Abs(r.R - r.L - s.W) < tx && Math.Abs(r.B - r.T - s.H) < ty;
+        }
+
+        static string ClassOf(IntPtr h) { var c = new StringBuilder(128); N.GetClassName(h, c, c.Capacity); return c.ToString(); }
+        static string TitleOf(IntPtr h) { var t = new StringBuilder(512); N.GetWindowText(h, t, t.Capacity); return t.ToString(); }
+
+        // The shell window in front, once it is one with this automation id inside.
+        static IntPtr WaitFor(string automationId, int ms)
+        {
+            for (int t = 0; t < ms; t += 60)
+            {
+                var h = N.GetForegroundWindow();
+                if (ClassOf(h) == Host && All(h).Any(e => Id(e) == automationId)) return h;
+                Thread.Sleep(60);
+            }
+            return IntPtr.Zero;
+        }
+
+        // The flyout and Snap Assist animate in and out, and an element can vanish between
+        // finding it and reading it (UIA_E_ELEMENTNOTAVAILABLE). Every read tolerates that.
+        static string Id(IUIAutomationElement e) { try { return e.CurrentAutomationId ?? ""; } catch (COMException) { return ""; } }
+        static string NameOf(IUIAutomationElement e) { try { return e.CurrentName ?? ""; } catch (COMException) { return ""; } }
+        static int TypeOf(IUIAutomationElement e) { try { return e.CurrentControlType; } catch (COMException) { return 0; } }
+
+        static List<IUIAutomationElement> Kids(IUIAutomationElement e)
+        {
+            var l = new List<IUIAutomationElement>();
+            try
+            {
+                var w = Ua.RawViewWalker;
+                var c = w.GetFirstChildElement(e);
+                while (c != null) { l.Add(c); c = w.GetNextSiblingElement(c); }
+            }
+            catch (COMException) { }
+            return l;
+        }
+
+        static void Collect(IUIAutomationElement e, List<IUIAutomationElement> into, int depth)
+        {
+            if (e == null || depth > 20) return;
+            into.Add(e);
+            foreach (var c in Kids(e)) Collect(c, into, depth + 1);
+        }
+
+        static List<IUIAutomationElement> All(IntPtr h)
+        {
+            var l = new List<IUIAutomationElement>();
+            try { Collect(Ua.ElementFromHandle(h), l, 0); } catch (COMException) { }
+            return l;
+        }
+
+        // Escape for the flyout or Snap Assist - never for an app, where it would stop work.
+        static void Dismiss()
+        {
+            if (ClassOf(N.GetForegroundWindow()) == Host) { Snapper.Tap(VK_ESC); Thread.Sleep(200); }
+        }
+
+        // wins[i] goes to targets[i], all on screen m. wins[0] opens the layout.
+        public static bool Form(List<Win> wins, List<Box> targets, Mon m, out string why)
+        {
+            why = null;
+            int n = wins.Count;
+            try
+            {
+                var first = new IntPtr(wins[0].Handle);
+                if (!Snapper.Front(first)) { why = "could not bring the first window to the front"; return false; }
+                Thread.Sleep(250);
+
+                IntPtr fly = IntPtr.Zero;
+                for (int k = 0; k < 2 && fly == IntPtr.Zero; k++)
+                {
+                    if (N.GetForegroundWindow() != first) break;          // never Win+Z into a window we are not grouping
+                    Snapper.ComboPlain(VK_LWIN, VK_Z);
+                    fly = WaitFor("SnapFlyoutControl", 1600);
+                }
+                if (fly == IntPtr.Zero) { why = "the Snap Layouts flyout did not open"; return false; }
+                Thread.Sleep(250);
+
+                // The plain layouts (not Windows' suggestions) with as many zones as windows; the
+                // one whose zone shapes match best.
+                IUIAutomationElement zoneForFirst = null; double best = double.MaxValue;
+                foreach (var grid in All(fly))
+                {
+                    if (Id(grid) != "LayoutGrid") continue;
+                    try
+                    {
+                    var parent = Ua.RawViewWalker.GetParentElement(grid);
+                    if (parent != null && Id(parent) == "WindowGroupSuggestionButton") continue;
+                    var zones = Kids(grid).Where(z => TypeOf(z) == UIA_Button).ToList();
+                    if (zones.Count != n) continue;
+                    var gr = grid.CurrentBoundingRectangle;
+                    double gw = gr.right - gr.left, gh = gr.bottom - gr.top;
+                    if (gw <= 0 || gh <= 0) continue;
+                    var shapes = zones.Select(z => { var r = z.CurrentBoundingRectangle; return new Box { X = (r.left - gr.left) / gw, Y = (r.top - gr.top) / gh, W = (r.right - r.left) / gw, H = (r.bottom - r.top) / gh }; }).ToList();
+                    var used = new bool[n]; double total = 0; int forFirst = -1; bool fits = true;
+                    for (int i = 0; i < n && fits; i++)
+                    {
+                        int bi = -1; double be = double.MaxValue;
+                        for (int j = 0; j < n; j++) if (!used[j]) { double e = Err(shapes[j], targets[i]); if (e < be) { be = e; bi = j; } }
+                        if (be > 0.25) fits = false;
+                        else { used[bi] = true; total += be; if (i == 0) forFirst = bi; }
+                    }
+                    if (fits && total < best) { best = total; zoneForFirst = zones[forFirst]; }
+                    }
+                    catch (COMException) { }      // a layout that vanished mid-read: the others still count
+                }
+                if (zoneForFirst == null) { Dismiss(); why = "no Snap Layout on " + m.Name + " has that shape"; return false; }
+                var press = zoneForFirst.GetCurrentPattern(UIA_Invoke) as IUIAutomationInvokePattern;
+                if (press == null) { Dismiss(); why = "the layout zone could not be pressed"; return false; }
+                press.Invoke();
+
+                var done = new bool[n]; done[0] = true;
+                for (int step = 1; step < n; step++)
+                {
+                    var sa = WaitFor("ItemList", 2500);
+                    if (sa == IntPtr.Zero) { why = "Snap Assist did not offer the next place"; return false; }
+                    Thread.Sleep(200);                     // let it finish animating in
+                    var els = All(sa);
+                    var list = els.FirstOrDefault(e => Id(e) == "ItemList");
+                    if (list == null) { Dismiss(); why = "Snap Assist had no window list"; return false; }
+                    tagRECT lr;
+                    try { lr = list.CurrentBoundingRectangle; }
+                    catch (COMException) { Thread.Sleep(250); els = All(sa); list = els.FirstOrDefault(e => Id(e) == "ItemList"); if (list == null) { Dismiss(); why = "Snap Assist closed"; return false; } lr = list.CurrentBoundingRectangle; }
+                    double cx = ((lr.left + lr.right) / 2.0 - m.WX) / m.WW, cy = ((lr.top + lr.bottom) / 2.0 - m.WY) / m.WH;
+                    int ti = -1; double te = double.MaxValue;
+                    for (int i = 0; i < n; i++)
+                    {
+                        if (done[i]) continue;
+                        var b = targets[i];
+                        double e = Math.Abs(b.X + b.W / 2 - cx) + Math.Abs(b.Y + b.H / 2 - cy);
+                        if (cx >= b.X && cx <= b.X + b.W && cy >= b.Y && cy <= b.Y + b.H) e -= 10;   // the place the list sits in wins
+                        if (e < te) { te = e; ti = i; }
+                    }
+                    string want = TitleOf(new IntPtr(wins[ti].Handle));
+                    var item = els.FirstOrDefault(e => TypeOf(e) == UIA_ListItem && NameOf(e) == want);
+                    if (item == null) { Dismiss(); why = "Snap Assist did not offer '" + UiFont.Plain(want) + "'"; return false; }
+                    var pick = item.GetCurrentPattern(UIA_Invoke) as IUIAutomationInvokePattern;
+                    if (pick == null) { Dismiss(); why = "the window in Snap Assist could not be picked"; return false; }
+                    pick.Invoke();
+                    done[ti] = true;
+                    Thread.Sleep(350);
+                }
+                return true;
+            }
+            catch (Exception e)
+            {
+                Dismiss();
+                why = "UI Automation: " + e.Message;
+                Log.Write("snap group: " + e.GetType().Name + " at " + (e.StackTrace ?? "").Split((char)10).FirstOrDefault());
+                return false;
+            }
         }
     }
 
@@ -706,7 +949,39 @@ namespace WindowGroups
             return slots;
         }
 
-        public class DeployResult { public string Group; public int Placed; public int Snapped; public int Total; public List<string> Missing = new List<string>(); }
+        public class DeployResult
+        {
+            public string Group; public int Placed; public int Snapped; public int Total;
+            public int Grouped;                                       // Windows snap groups formed
+            public List<string> NotGrouped = new List<string>();     // screens where that did not work out
+            public List<string> Missing = new List<string>();
+
+            public string Summary()
+            {
+                string t = Placed + " of " + Total + " in place";
+                if (Grouped > 0) t += ", " + (Grouped == 1 ? "a Windows snap group" : Grouped + " Windows snap groups");
+                else if (Snapped > 0) t += ", " + Snapped + " snapped";
+                if (NotGrouped.Count > 0) t += " (not grouped on " + string.Join(", ", NotGrouped) + " - snapped one by one)";
+                if (Missing.Count > 0) t += " - not open: " + string.Join(", ", Missing.Select(UiFont.Plain));
+                return t;
+            }
+        }
+
+        // The parts of a group that are whole Snap Layouts: per screen, its windows when together
+        // they fill that screen. Those are deployed as one Windows snap group each.
+        public static List<List<int>> SnapSets(Group g, List<Mon> mons)
+        {
+            var res = new List<List<int>>();
+            var byScreen = Enumerable.Range(0, g.Slots.Count).Where(i => !g.Slots[i].Max)
+                                     .GroupBy(i => Snapper.MonOf(g.Slots[i], mons));
+            foreach (var set in byScreen)
+            {
+                if (set.Key == null) continue;
+                var idx = set.ToList();
+                if (SnapGroups.LooksLikeLayout(idx.Select(i => g.Slots[i]).ToList(), set.Key)) res.Add(idx);
+            }
+            return res;
+        }
 
         static readonly object deployGate = new object();
 
@@ -727,9 +1002,51 @@ namespace WindowGroups
                     var r = new DeployResult { Group = g.Name, Total = states.Count };
                     // Lowest in the saved stack first, so raising them one by one leaves the top one on top.
                     var live = states.Where(s => s.Window != null).OrderByDescending(s => s.Slot.Z).ToList();
+                    var done = new HashSet<int>();
+
+                    // Whole layouts first, each formed as a real Windows snap group.
+                    foreach (var set in SnapSets(g, mons))
+                    {
+                        var m = Snapper.MonOf(g.Slots[set[0]], mons);
+                        var members = live.Where(s => set.Contains(s.Index)).OrderBy(s => s.Slot.Y).ThenBy(s => s.Slot.X).ToList();
+                        if (members.Count < 2 || members.Count != set.Count) continue;     // part of it not open: one by one below
+                        if (snapOnly && members.All(s => SnapGroups.InPlace(s.Window.Handle, s.Slot, m)))
+                        {
+                            foreach (var s in members) done.Add(s.Index);
+                            continue;
+                        }
+                        // Out of any snap group they are in now, onto their screen, then grouped.
+                        foreach (var s in members)
+                        {
+                            var hw = new IntPtr(s.Window.Handle);
+                            if (N.IsArranged(hw) || N.IsZoomed(hw) || N.IsIconic(hw)) N.ShowWindow(hw, N.SW_RESTORE);
+                        }
+                        Thread.Sleep(350);
+                        foreach (var s in members) Desk.Place(s.Window.Handle, s.Slot.X, s.Slot.Y, s.Slot.W, s.Slot.H, false);
+                        Thread.Sleep(200);
+                        Snapper.CloseSnapAssist();
+                        string why;
+                        bool formed = SnapGroups.Form(members.Select(s => s.Window).ToList(), members.Select(s => SnapGroups.Rel(s.Slot, m)).ToList(), m, out why);
+                        Thread.Sleep(300);
+                        int inPlace = 0;
+                        foreach (var s in members)
+                            if (SnapGroups.InPlace(s.Window.Handle, s.Slot, m)) { done.Add(s.Index); r.Snapped++; r.Placed++; inPlace++; }
+                        if (formed && inPlace == members.Count)
+                        {
+                            r.Grouped++;
+                            Log.Write("snap group: '" + g.Name + "' on " + m.Name + " formed with " + inPlace + " windows");
+                        }
+                        else
+                        {
+                            r.NotGrouped.Add(m.Name);
+                            Log.Write("snap group: '" + g.Name + "' on " + m.Name + " not formed (" + (why ?? "windows not where expected") + ") - snapping one by one");
+                        }
+                    }
+
                     bool snappedAny = false;
                     foreach (var s in live)
                     {
+                        if (done.Contains(s.Index)) continue;
                         var zone = Snapper.ZoneOf(s.Slot, mons);
                         if (zone != Zone.None)
                         {
@@ -742,8 +1059,8 @@ namespace WindowGroups
                     if (snappedAny) Snapper.CloseSnapAssist();
                     if (!snapOnly) foreach (var s in live) Desk.Raise(s.Window.Handle);
                     foreach (var s in states.Where(s => s.Window == null)) r.Missing.Add(s.Title);
-                    Log.Write("deploy '" + g.Name + "'" + (snapOnly ? " (snap only)" : "") + ": " + r.Placed + " of " + r.Total + " placed, " + r.Snapped + " snapped" +
-                              (r.Missing.Count > 0 ? ", not open: " + string.Join(", ", r.Missing) : ""));
+                    Log.Write("deploy '" + g.Name + "'" + (snapOnly ? " (snap only)" : "") + ": " + r.Placed + " of " + r.Total + " placed, " + r.Snapped + " snapped, " +
+                              r.Grouped + " snap group(s)" + (r.Missing.Count > 0 ? ", not open: " + string.Join(", ", r.Missing) : ""));
                     return r;
                 }
                 finally { Snapper.Busy = false; }
@@ -1432,6 +1749,7 @@ namespace WindowGroups
                 foreach (var g in Store.D.Groups)
                 {
                     var states = Layouts.Resolve(g, wins, titles, mons);
+                    var inLayout = new HashSet<int>(Layouts.SnapSets(g, mons).SelectMany(x => x));
                     savedSets.Add(new KeyValuePair<string, HashSet<long>>(g.Name,
                         new HashSet<long>(states.Where(s => s.Window != null).Select(s => s.Window.Handle))));
                     groups.Add(new Dictionary<string, object> {
@@ -1442,7 +1760,8 @@ namespace WindowGroups
                             { "process", s.Slot.Process },
                             { "x", s.Slot.X }, { "y", s.Slot.Y }, { "w", s.Slot.W }, { "h2", s.Slot.H }, { "max", s.Slot.Max }, { "z", s.Slot.Z },
                             { "mon", s.Mon }, { "open", s.Window != null }, { "h", s.Window != null ? s.Window.Handle.ToString() : null },
-                            { "zone", Snapper.ZoneOf(s.Slot, mons) == Zone.None ? null : Snapper.ZoneOf(s.Slot, mons).ToString() } }).ToList() } });
+                            { "layout", inLayout.Contains(s.Index) },
+                            { "zone", inLayout.Contains(s.Index) ? "layout" : Snapper.ZoneOf(s.Slot, mons) == Zone.None ? null : Snapper.ZoneOf(s.Slot, mons).ToString() } }).ToList() } });
                 }
                 res["settings"] = new Dictionary<string, object> { { "autoRestore", Store.D.AutoRestore }, { "startWithWindows", Startup.On }, { "keepSnaps", Store.D.KeepSnaps } };
             }
@@ -1462,7 +1781,7 @@ namespace WindowGroups
             res["detected"] = detected(true);
             res["detectedAll"] = detected(false);
             res["claudeFound"] = wins.Any(w => w.IsClaude) || titles.Count > 0;
-            res["version"] = "1.4.0";
+            res["version"] = "1.5.0";
             return res;
         }
 
@@ -1495,10 +1814,9 @@ namespace WindowGroups
                     foreach (var g in gs)
                     {
                         var r = Layouts.Deploy(g);
-                        parts.Add(r.Group + " " + r.Placed + "/" + r.Total + (r.Snapped > 0 ? ", " + r.Snapped + " snapped" : "") +
-                                  (r.Missing.Count > 0 ? " (not open: " + string.Join(", ", r.Missing.Select(UiFont.Plain)) + ")" : ""));
+                        parts.Add(UiFont.Plain(r.Group) + ": " + r.Summary());
                     }
-                    return Ok("Deployed " + string.Join(" - ", parts));
+                    return Ok("Deployed " + string.Join(" | ", parts) + ".");
                 }
                 case "save":
                 {
@@ -1616,6 +1934,58 @@ namespace WindowGroups
                         string t = g.Slots[i].Title;
                         g.Slots.RemoveAt(i); g.Snap = false; Store.Save();
                         return Ok("Removed " + UiFont.Plain(t) + " from " + g.Name + ".");
+                    }
+                }
+                case "front":
+                {
+                    // Bring a group's windows to the top - instantly, without moving or snapping
+                    // anything. The quick answer to two groups stacked on one screen.
+                    Group g;
+                    lock (Store.Gate) g = Store.Find(S(b, "id"));
+                    if (g == null) return Fail(404, "No such group.");
+                    var mons = Desk.Monitors();
+                    var live = Layouts.Resolve(g, Desk.List(mons), Claude.Titles(), mons).Where(x => x.Window != null).OrderByDescending(x => x.Slot.Z).ToList();
+                    foreach (var x in live) Desk.Raise(x.Window.Handle);
+                    return Ok(live.Count + " window(s) of " + g.Name + " brought to the front.");
+                }
+                case "minimize":
+                {
+                    Group g;
+                    lock (Store.Gate) g = Store.Find(S(b, "id"));
+                    if (g == null) return Fail(404, "No such group.");
+                    var mons = Desk.Monitors();
+                    var live = Layouts.Resolve(g, Desk.List(mons), Claude.Titles(), mons).Where(x => x.Window != null).ToList();
+                    foreach (var x in live) N.ShowWindow(new IntPtr(x.Window.Handle), 6);      // SW_MINIMIZE
+                    return Ok(live.Count + " window(s) of " + g.Name + " minimized. Deploy or Bring to front puts them back.");
+                }
+                case "frontWindow":
+                {
+                    var w = Desk.List(Desk.Monitors()).FirstOrDefault(x => x.Handle.ToString() == S(b, "handle"));
+                    if (w == null) return Fail(404, "That window is not open any more.");
+                    Desk.Raise(w.Handle);
+                    return Ok(UiFont.Plain(w.Title) + " brought to the front.");
+                }
+                case "addToGroup":
+                {
+                    // Windows join a group at the place and size they have right now.
+                    var want = new HashSet<string>(L(b, "handles"));
+                    if (S(b, "handle") != null) want.Add(S(b, "handle"));
+                    var mons = Desk.Monitors();
+                    var open = Desk.List(mons);
+                    var wins = open.Where(x => want.Contains(x.Handle.ToString())).ToList();
+                    if (wins.Count == 0) return Fail(404, "Those windows are not open any more.");
+                    lock (Store.Gate)
+                    {
+                        var g = Store.Find(S(b, "id"));
+                        if (g == null) return Fail(404, "No such group.");
+                        var already = new HashSet<long>(Layouts.Resolve(g, open, Claude.Titles(), mons).Where(s => s.Window != null).Select(s => s.Window.Handle));
+                        var add = wins.Where(x => !already.Contains(x.Handle)).ToList();
+                        if (add.Count == 0) return Ok("Already in " + g.Name + ".");
+                        g.Slots.AddRange(Layouts.Snapshot(add));
+                        g.Saved = DateTime.Now.ToString("dd MMM HH:mm"); g.Snap = false;
+                        Store.Save();
+                        Log.Write("added " + add.Count + " window(s) to '" + g.Name + "'");
+                        return Ok((add.Count == 1 ? UiFont.Plain(add[0].Title) + " is" : add.Count + " windows are") + " now in " + g.Name + ", where " + (add.Count == 1 ? "it sits" : "they sit") + " now.");
                     }
                 }
                 case "overlay":
@@ -1768,9 +2138,7 @@ namespace WindowGroups
                     ThreadPool.QueueUserWorkItem(delegate
                     {
                         var r = Layouts.Deploy(grp);
-                        App.OnUi(() => icon.ShowBalloonTip(2500, UiFont.Plain(grp.Name), r.Placed + " of " + r.Total + " placed" +
-                            (r.Snapped > 0 ? ", " + r.Snapped + " snapped" : "") +
-                            (r.Missing.Count > 0 ? " - not open: " + string.Join(", ", r.Missing.Select(UiFont.Plain)) : ""), ToolTipIcon.None));
+                        App.OnUi(() => icon.ShowBalloonTip(2500, UiFont.Plain(grp.Name), r.Summary(), ToolTipIcon.None));
                     });
                 };
                 menu.Items.Add(item);

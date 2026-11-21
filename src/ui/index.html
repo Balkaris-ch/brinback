@@ -76,7 +76,7 @@
   .list { overflow: auto; }
   .groups { flex: 1 1 auto; min-height: 120px; }
   .row {
-    position: relative; display: grid; grid-template-columns: 18px 1fr auto; gap: 14px; align-items: center;
+    position: relative; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 14px; align-items: center;
     padding: 13px 22px; cursor: pointer; border-top: 1px solid var(--line); transition: background .15s;
   }
   .row:last-child { border-bottom: 1px solid var(--line); }
@@ -125,22 +125,34 @@
   .seg button { background: none; border: 0; padding: 7px 12px; cursor: pointer; font: 500 10.5px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--mute-2); }
   .seg button.on { color: var(--ink); background: var(--paper); }
 
-  .stage { position: relative; margin: 14px 26px 0; min-height: 0; }
+  .stage { position: relative; margin: 10px 26px 0; min-height: 0; }
   .canvas { position: absolute; inset: 0; }
   .mon { position: absolute; border: 1px solid var(--line-2); background:
            radial-gradient(circle at 1px 1px, rgba(244,243,240,.045) 1px, transparent 0) 0 0 / 14px 14px, var(--ink-2); }
-  .mon.dim { opacity: .55; }
-  .ml { position: absolute; z-index: 5; transform: translateY(-50%); padding: 4px 7px; background: var(--ink); border: 1px solid var(--line-2);
-         font: 500 9px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--mute-2); white-space: nowrap; pointer-events: none; }
-  .ml b { color: var(--paper); font-weight: 500; }
-  .ml.dim { opacity: .45; }
+  .mon.dim, .mh.dim { opacity: .5; }
+  /* screen header: name, then one chip per group on that screen, front to back */
+  .mh { position: absolute; height: 30px; display: flex; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; padding: 0 1px; }
+  .mh .mn { font: 500 9.5px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute-2); flex: 0 0 auto; max-width: 60%; overflow: hidden; text-overflow: ellipsis; margin-right: 4px; }
+  .mh .mn b { color: var(--paper); font-weight: 500; }
+  .mh .mn:only-child { max-width: 100%; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 6px; border: 1px solid var(--line-3); background: var(--ink);
+          font: 500 9.5px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--paper); cursor: pointer; flex: 0 1 auto; min-width: 30px; max-width: 170px; }
+  .chip .cn { overflow: hidden; text-overflow: ellipsis; }
+  .chip i { font-style: normal; color: var(--mute-2); letter-spacing: .06em; }
+  .chip:hover { border-color: var(--mute); }
+  .chip.on { background: var(--signal); border-color: var(--signal); color: var(--ink); }
+  .chip.on i { color: rgba(10,10,10,.6); }
+  .chip.snap { border-style: dashed; border-color: var(--mute); }
+  .chip.snap.on { background: var(--paper); border-color: var(--paper); border-style: solid; color: var(--ink); }
+  .chip.back:not(.on) { color: var(--mute); }
+  .chip .ico { width: 10px; height: 10px; }
 
   .tile {
     position: absolute; padding: 8px 9px; overflow: hidden; border: 1px solid var(--line-3);
     background: var(--ink-3); transition: border-color .15s, background .15s; cursor: default;
     display: flex; flex-direction: column; gap: 4px;
   }
-  .tile .t { font-size: 12px; font-weight: 500; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+  .tile .t { font-size: 12px; font-weight: 500; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: break-word; hyphens: auto; }
   .tile .s { font: 500 9px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--mute-2); }
   .tile.ghost { border-color: var(--line); background: var(--ink-2); }
   .tile.ghost .t { color: var(--mute-3); font-weight: 400; }
@@ -156,7 +168,23 @@
   .tile.missing .t { color: var(--mute); }
   .tile.missing .s { color: var(--amber); }
   .tile.missing:hover { border-color: var(--amber); }
-  .tile .n { position: absolute; right: 26px; top: 8px; font: 500 9px/1 var(--mono); color: var(--mute-3); }
+  .tile .n { position: absolute; right: 7px; bottom: 6px; font: 500 9px/1 var(--mono); color: var(--mute-2); }
+  .tile.on .n { color: rgba(37,247,22,.7); }
+  .tile.hv { z-index: 3; border-color: var(--signal); opacity: 1; }
+  .tile.hv.ghost { background: var(--ink-3); }
+  .tile.hv.ghost .t { color: var(--paper); }
+  .layers g.hv .le { stroke: var(--signal); stroke-width: 1.5; }
+  .layers g.hv { opacity: 1; }
+  .layers g.snapl.hv .le { stroke: var(--paper); stroke-opacity: 1; }
+  .chip.hv:not(.on) { border-color: var(--signal); }
+  /* filtered out: still solid, so the windows behind do not bleed through - just quiet */
+  .tile.out { border-color: var(--line); background: var(--ink-2); }
+  .tile.out .t { color: var(--mute-3); font-weight: 400; }
+  .tile.out .s, .tile.out .gi { opacity: .35; }
+  .tile.out:hover .t { color: var(--mute); }
+  .tile.out.hv .t { color: var(--paper); }
+  .tile.match { border-color: var(--paper); }
+  .tile.small { padding: 0; }
   .tile.narrow { padding: 6px 6px; gap: 3px; }
   .tile.narrow .t { font-size: 10.5px; line-height: 1.2; -webkit-line-clamp: 6; padding-right: 11px; }
   .tile.narrow .s { font-size: 7.5px; letter-spacing: .08em; }
@@ -188,31 +216,42 @@
   .layers .snapl .lf { fill: rgba(244,243,240,.05); }
   .layers .snapl .le { stroke: var(--paper); stroke-opacity: .65; stroke-dasharray: 5 4; }
   .layers .snapl.on .le { stroke-opacity: 1; filter: drop-shadow(0 0 5px rgba(244,243,240,.45)); }
-  .gl.snap { border-style: dashed; border-color: var(--mute); }
-  .gl.snap.on { background: var(--paper); border-color: var(--paper); border-style: solid; color: var(--ink); }
   .state.s { color: var(--paper); }
   .dot.snap { background: var(--paper); }
   .tile.snapm .gi.g { color: var(--paper); }
-  .gl { position: absolute; z-index: 6; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 7px;
-        padding: 4px 8px 4px 7px; background: var(--ink); border: 1px solid var(--line-3);
-        font: 500 9.5px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--paper); white-space: nowrap; cursor: pointer; }
-  .gl:hover { border-color: var(--mute); }
-  .gl i { font-style: normal; color: var(--mute-2); letter-spacing: .08em; }
-  .gl.on { background: var(--signal); border-color: var(--signal); color: var(--ink); }
-  .gl.on i { color: rgba(10,10,10,.6); }
-  .gl.dim { opacity: .4; }
 
   .state { width: 16px; display: grid; place-items: center; color: var(--mute-2); }
   .state.g { color: var(--signal); }
   .state.p { color: var(--amber); }
-  .legend { display: flex; gap: 18px; margin-left: 22px; }
+  .legend { display: flex; gap: 18px; margin-left: 10px; }
+  .search { height: 28px; width: 200px; padding: 0 10px; background: var(--ink-2); border: 1px solid var(--line-2); border-radius: 2px; outline: none; font-size: 12px; }
+  .search:focus { border-color: var(--mute-2); }
+  .search::placeholder { color: var(--mute-3); }
+  .bar { flex-wrap: wrap; row-gap: 8px; }
+  /* the window list under the map */
+  .wl { margin-top: 16px; border-top: 1px solid var(--line); }
+  .wrow { display: grid; grid-template-columns: 16px 1fr 130px 200px 30px; gap: 14px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .wrow:hover { background: var(--ink-2); }
+  .wrow .name { font-size: 13px; font-weight: 400; }
+  .wrow .name i { font: 500 9.5px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute-2); font-style: normal; margin-left: 6px; }
+  .wrow.on .name { color: var(--signal); }
+  .wrow .st { font: 500 10px/1.3 var(--mono); letter-spacing: .12em; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wrow .st.g { color: var(--paper); } .wrow .st.s { color: var(--mute); } .wrow .st.u { color: var(--amber); }
+  .x.fr { display: grid; place-items: center; }
+  .cnt { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; border-bottom: 1px solid transparent; }
+  .cnt:hover { color: var(--paper); }
+  .cnt.on { color: var(--paper); border-bottom-color: var(--signal); }
+  select.btnsel { width: auto; height: 38px; padding-right: 34px; background-position: calc(100% - 16px) 17px, calc(100% - 12px) 17px; }
+  .mini { width: 28px; height: 18px; flex: none; }
+  .mini rect { fill: none; stroke: var(--mute-3); }
+  .mini.all rect { stroke: var(--signal); } .mini.some rect { stroke: var(--amber); }
   .lg { display: inline-flex; align-items: center; gap: 7px; color: var(--mute-2); }
   .lg.g { color: var(--mute); }
   .empty-stage { position: absolute; inset: 0; display: grid; place-items: center; color: var(--mute-2); }
 
   /* ---------- detail */
   /* fixed height: if it followed its content, the map above would resize and jump under the cursor */
-  .detail { border-top: 1px solid var(--line); margin-top: 18px; padding: 20px 26px 22px; height: 36vh; overflow: auto; }
+  .detail { border-top: 1px solid var(--line); margin-top: 12px; padding: 18px 26px 22px; height: 34vh; overflow: auto; }
   .dhead { display: flex; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
   .dtitle { font-weight: 300; font-size: 30px; letter-spacing: -.01em; line-height: 1.05; }
   .dtitle input { background: transparent; border: 0; border-bottom: 1px solid var(--line-3); outline: none; font-weight: 300; font-size: 30px; width: min(520px, 100%); padding: 0 0 4px; }
@@ -220,7 +259,7 @@
   .dmeta { margin-top: 8px; }
   .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-left: auto; }
   .slots { margin-top: 18px; border-top: 1px solid var(--line); }
-  .slot { display: grid; grid-template-columns: 34px 1fr 150px 120px 170px 34px; gap: 14px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); }
+  .slot { display: grid; grid-template-columns: 30px minmax(0, 1fr) 110px 110px 160px 30px; gap: 14px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); }
   .slot .ix { font: 500 10.5px/1 var(--mono); color: var(--mute-3); }
   .slot .st { font: 500 10px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; }
   .slot .st.ok { color: var(--signal); }
@@ -283,7 +322,10 @@
         <button class="btn ghost" id="backAll" style="height:26px;padding:0 10px;display:none" title="Esc">&larr; Everything</button>
         <span class="legend cap"><span class="lg g" id="lgG"></span><span class="lg" id="lgU"></span></span>
         <div class="spacer"></div>
+        <input class="search" id="search" placeholder="Search windows  ( / )" autocomplete="off" spellcheck="false">
+        <div class="seg" id="filter" title="Which windows to show"><button data-f="all">All</button><button data-f="grouped">Grouped</button><button data-f="loose">Not grouped</button></div>
         <div class="seg" id="scope"><button data-s="claude">Claude</button><button data-s="all">All apps</button></div>
+        <div class="seg" id="zoom" title="With a group or layout selected: show only its screens, larger"><button data-z="fit">Zoom</button><button data-z="all">All screens</button></div>
       </div>
       <div class="stage" id="stage"><div class="canvas" id="canvas"></div></div>
       <section class="detail" id="detail"></section>
@@ -308,6 +350,10 @@ const ticked = new Set(JSON.parse(localStorage.getItem("wg.ticked") || "[]"));
 let pop = null;
 let hoverGroup = null;
 let dpick = null;                   // windows ticked in the found layout being looked at
+let hoverDet = null;                // a Windows snap group (chip) under the mouse
+let filter = localStorage.getItem("wg.filter") || "all";       // all | grouped | loose
+let zoomAll = localStorage.getItem("wg.zoomAll") === "1";        // selection: zoom to its screens, or show all
+let query = "";
 
 const curDetected = () => view.kind === "detected" ? detectedInScope().find(x => x.key === view.key) : null;
 function openDetected(key) {
@@ -326,6 +372,7 @@ function freeName(base) {
 
 // Grouped: two stacked frames, the front one filled. Not grouped: one dashed frame.
 const ICON_GROUPED = '<svg class="ico" viewBox="0 0 12 12" aria-hidden="true"><path d="M3.5 3V.5h8v8H9" fill="none" stroke="currentColor"/><rect x=".5" y="3.5" width="8" height="8" fill="currentColor" fill-opacity=".22" stroke="currentColor"/></svg>';
+const ICON_FRONT = '<svg class="ico" viewBox="0 0 12 12" aria-hidden="true"><rect x=".5" y="4.5" width="7" height="7" fill="none" stroke="currentColor" stroke-opacity=".5"/><rect x="4.5" y=".5" width="7" height="7" fill="currentColor" fill-opacity=".25" stroke="currentColor"/></svg>';
 const ICON_LOOSE = '<svg class="ico" viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" fill="none" stroke="currentColor" stroke-dasharray="2 1.6"/></svg>';
 
 // Windows in a snap group that Windows made (2+ snapped windows on one screen), by handle.
@@ -453,6 +500,11 @@ function render() {
   $("#pulse").classList.toggle("off", !S.settings.autoRestore);
   $("#liveLabel").textContent = S.settings.autoRestore ? "Watching" : "Paused";
   document.querySelectorAll("#scope button").forEach(b => b.classList.toggle("on", b.dataset.s === scope));
+  document.querySelectorAll("#filter button").forEach(b => b.classList.toggle("on", b.dataset.f === filter));
+  document.querySelectorAll("#zoom button").forEach(b => b.classList.toggle("on", (b.dataset.z === "all") === zoomAll));
+  $("#zoom").style.display = view.kind === "live" ? "none" : "";
+  const fm = focusMons();
+  $("#zoom").querySelector('[data-z="all"]').textContent = "All screens" + (fm && !zoomAll && S.monitors.length > fm.size ? " (" + (S.monitors.length - fm.size) + " more)" : "");
   $("#backAll").style.display = view.kind === "live" ? "none" : "";
   if (view.kind === "detected" && !curDetected()) { view = { kind: "live" }; dpick = null; }
   renderGroups();
@@ -476,14 +528,30 @@ function renderGroups() {
       return '<div class="row' + (sel ? " sel" : "") + '" data-id="' + esc(g.id) + '">' +
         '<div class="tick' + (ticked.has(g.id) ? " on" : "") + '" data-tick="' + esc(g.id) + '"></div>' +
         '<div style="min-width:0"><div class="name">' + esc(g.name) + '</div>' +
-        '<div class="meta"><b>' + o + '</b>/' + n + ' open' + (g.auto ? ' &middot; auto' : '') + (g.snap ? ' &middot; snap' : '') + '</div></div>' +
-        '<div class="dot ' + cls + '"></div></div>';
+        '<div class="meta"><b>' + o + '</b>/' + n + ' open &middot; ' + esc([...new Set(g.slots.map(s => monName(s.mon)))].join(" + ")) + (g.auto ? ' &middot; auto' : '') + '</div></div>' +
+        miniLayout(g, cls) + '</div>';
     }).join(""));
   }
   const n = ticked.size;
   const b = $("#deploySel");
   b.disabled = n === 0;
   b.innerHTML = n ? 'Deploy ' + plural(n, "group") + ' <span class="k">' + n + '</span>' : "Tick groups to deploy together";
+}
+
+// A thumbnail of a group: its windows on the screen it mostly sits on.
+function miniLayout(g, cls) {
+  const counts = new Map();
+  for (const s of g.slots) counts.set(s.mon, (counts.get(s.mon) || 0) + 1);
+  const mi = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+  const m = mi && S.monitors.find(x => x.i === mi[0]);
+  if (!m) return '<div class="dot ' + cls + '"></div>';
+  const W = 28, H = 18, sx = (W - 1) / m.w, sy = (H - 1) / m.h;
+  const rects = g.slots.filter(s => s.mon === m.i).map(s => {
+    const x = Math.max(0, s.x + 7 - m.x) * sx, y = Math.max(0, s.y - m.y) * sy;
+    const w = Math.min(m.w, s.w - 14) * sx, h = Math.min(m.h, s.h2 - 7) * sy;
+    return '<rect x="' + (x + .5).toFixed(1) + '" y="' + (y + .5).toFixed(1) + '" width="' + Math.max(1, w - 1).toFixed(1) + '" height="' + Math.max(1, h - 1).toFixed(1) + '"/>';
+  }).join("");
+  return '<svg class="mini ' + cls + '" viewBox="0 0 ' + W + ' ' + H + '" aria-hidden="true">' + rects + '</svg>';
 }
 
 function renderDetected() {
@@ -518,63 +586,6 @@ function renderDetected() {
   }).join(""));
 }
 
-// The group layer: a frame drawn BEHIND all of a group's windows, one per screen it covers,
-// with the group's name on it - so a group reads as one thing, and windows that are merely
-// placed next to each other plainly do not have one. The selected group's layer is drawn from
-// its saved slots (including any that are not open); every other group's from where its
-// windows actually are.
-function groupLayers(g, active, dimOthers) {
-  const pad = 8;
-  let paths = "", labels = "";
-  for (const gr of S.groups) {
-    const rects = [];
-    const fromSlots = view.kind === "group" && view.id === gr.id;
-    for (const sl of gr.slots) {
-      let r = null;
-      if (fromSlots) r = { mon: sl.mon, x: sl.x + 7, y: sl.y, w: sl.w - 14, h: sl.h2 - 7 };
-      else if (sl.open) {
-        const w = winByH(sl.h);
-        if (w && !w.min && (scope === "all" || w.claude)) r = { mon: w.mon, x: w.vx, y: w.vy, w: w.vw, h: w.vh };
-      }
-      if (r) rects.push({ mon: r.mon, l: g.X(r.x) - pad, t: g.Y(r.y) - pad, r: g.X(r.x + r.w) + pad, b: g.Y(r.y + r.h) + pad });
-    }
-    if (!rects.length) continue;
-    const on = active.has(gr.id), dim = dimOthers && !on;
-    const cls = (on ? "on" : "") + (dim ? " dim" : "");
-    const u = unionOutline(rects);
-    paths += '<g class="' + cls + '"><path class="lf" d="' + u.fill + '"/><path class="le" d="' + u.edges + '"/></g>';
-    // one name tag per screen the group covers, on its top-left window
-    const firsts = new Map();
-    for (const r of rects) {
-      const f = firsts.get(r.mon);
-      if (!f || r.t < f.t - 2 || (Math.abs(r.t - f.t) <= 2 && r.l < f.l)) firsts.set(r.mon, r);
-    }
-    for (const r of firsts.values())
-      labels += '<span class="gl ' + cls + '" data-gsel="' + esc(gr.id) + '" title="Open this group" style="left:' + (r.l + 10).toFixed(1) + 'px;top:' + r.t.toFixed(1) + 'px">' +
-                ICON_GROUPED + esc(gr.name) + ' <i>' + gr.open + '/' + gr.slots.length + (gr.snap ? ' &middot; snap' : '') + '</i></span>';
-  }
-  // Snap groups Windows made that are not a saved group (yet): dashed, in paper, named for it.
-  const mem = membership();
-  for (const d of (S.detectedAll || [])) {
-    const hs = d.snap || [];
-    if (hs.length < 2 || hs.every(h => mem.has(h))) continue;
-    const rects = [];
-    for (const h of hs) {
-      const w = winByH(h);
-      if (w && (scope === "all" || w.claude)) rects.push({ mon: w.mon, l: g.X(w.vx) - pad, t: g.Y(w.vy) - pad, r: g.X(w.vx + w.vw) + pad, b: g.Y(w.vy + w.vh) + pad });
-    }
-    if (rects.length < 2) continue;
-    const on = view.kind === "detected" && view.key === d.key;
-    const cls = "snapl" + (on ? " on" : "") + (dimOthers ? " dim" : "");
-    const u = unionOutline(rects);
-    paths += '<g class="' + cls + '"><path class="lf" d="' + u.fill + '"/><path class="le" d="' + u.edges + '"/></g>';
-    const r = rects.slice().sort((a, b) => (a.t - b.t) || (a.l - b.l))[0];
-    labels += '<span class="gl snap' + (on ? " on" : "") + (dimOthers ? " dim" : "") + '" data-dsel="' + d.key + '" title="A snap group made in Windows" style="left:' + (r.l + 10).toFixed(1) + 'px;top:' + r.t.toFixed(1) + 'px">' +
-              ICON_GROUPED + 'Snap group <i>' + esc(d.monName) + (S.settings.keepSnaps ? ' &middot; keeping' : '') + '</i></span>';
-  }
-  return { html: paths ? '<svg class="layers">' + paths + '</svg>' : "", labels };
-}
-
 // The exact outline of a set of overlapping rectangles. A bounding box around a group would
 // swallow a window that merely sits between two of its members and make it look grouped; the
 // layer has to follow the group's windows and nothing else. Every rectangle edge cuts the plane
@@ -606,131 +617,315 @@ function unionOutline(rects) {
   return { fill, edges };
 }
 
-// The map: every screen to scale, windows drawn where they really are.
-function geometry() {
+// ------------------------------------------------------------------ the map
+// Every screen is its own card, to scale and where it sits, with a header strip above it: the
+// screen's name, and one chip per group on it, front to back. The first map drew all screens
+// edge to edge with names inside them - two groups on one screen put their labels on top of each
+// other, and a screen's name sat on the screen below it. Headers live in the gaps instead.
+const HEAD = 30, GAP_X = 18, GAP_Y = 10;
+
+function geometry(mons) {
   const box = $("#stage").getBoundingClientRect();
-  const ms = S.monitors;
-  const minX = Math.min(...ms.map(m => m.x)), minY = Math.min(...ms.map(m => m.y));
-  const maxX = Math.max(...ms.map(m => m.x + m.w)), maxY = Math.max(...ms.map(m => m.y + m.h));
-  const pad = 6, bottom = 4;
-  const s = Math.min((box.width - pad * 2) / (maxX - minX), (box.height - pad - bottom) / (maxY - minY));
-  const ox = (box.width - (maxX - minX) * s) / 2, oy = pad + (box.height - pad - bottom - (maxY - minY) * s) / 2;
-  return { s, X: x => ox + (x - minX) * s, Y: y => oy + (y - minY) * s };
+  // Edges closer than this are the same row or column (screens are rarely aligned to the pixel).
+  const near = 60;
+  const cluster = vals => { const out = []; for (const v of [...vals].sort((a, b) => a - b)) if (!out.length || v - out[out.length - 1] > near) out.push(v); return out; };
+  const minX = Math.min(...mons.map(m => m.x)), minY = Math.min(...mons.map(m => m.y));
+  const maxX = Math.max(...mons.map(m => m.x + m.w)), maxY = Math.max(...mons.map(m => m.y + m.h));
+  const xe = cluster(mons.map(m => m.x).filter(x => x > minX + near));
+  const ye = cluster(mons.map(m => m.y).filter(y => y > minY + near));
+  const gapsW = xe.length * GAP_X, gapsH = HEAD + ye.length * (HEAD + GAP_Y);
+  const s = Math.max(0.01, Math.min((box.width - gapsW - 8) / (maxX - minX), (box.height - gapsH - 6) / (maxY - minY)));
+  const ox = Math.max(4, (box.width - (maxX - minX) * s - gapsW) / 2);
+  const oy = Math.max(2, (box.height - (maxY - minY) * s - gapsH) / 2);
+  const before = (edges, v) => edges.filter(e => e <= v + near).length;
+  const card = new Map();
+  for (const m of mons) card.set(m.i, {
+    m, left: ox + (m.x - minX) * s + before(xe, m.x) * GAP_X,
+    top: oy + HEAD + (m.y - minY) * s + before(ye, m.y) * (HEAD + GAP_Y),
+    w: m.w * s, h: m.h * s
+  });
+  return { s, card };
 }
 
-function tileHtml(cls, g, x, y, w, h, title, sub, attrs, n, mark) {
-  const W = Math.max(14, w * g.s), H = Math.max(14, h * g.s);
+// A rectangle in screen pixels -> inside its screen's card, clipped to the screen.
+function inCard(cd, s, x, y, w, h) {
+  const m = cd.m;
+  const l = Math.max(x, m.x), t = Math.max(y, m.y), r = Math.min(x + w, m.x + m.w), b = Math.min(y + h, m.y + m.h);
+  if (r - l < 4 || b - t < 4) return null;
+  return { l: (l - m.x) * s, t: (t - m.y) * s, r: (r - m.x) * s, b: (b - m.y) * s };
+}
+
+// Which groups a window belongs to, as attributes - pointing at a group lights these up.
+function memAttrs(h, mem, snaps) {
+  const gs = mem.get(h), sd = snaps.get(h);
+  return (gs ? ' data-gm="' + esc(gs.map(x => x.id).join(" ")) + '"' : '') + (sd ? ' data-dm="' + esc(sd.key) + '"' : '');
+}
+
+function tileHtml(cls, r, title, sub, attrs, n, mark) {
+  const W = Math.max(10, r.r - r.l), H = Math.max(10, r.b - r.t);
   // Names stay on narrow tiles - in smaller type. The first version hid them under 90px, and a
   // tall portrait screen shrinks the map so much that a column of thirds lost every name.
   const small = W < 46 || H < 28, narrow = !small && W < 118;
-  return '<div class="tile ' + cls + (narrow ? " narrow" : "") + '" ' + (attrs || "") + ' title="' + esc(title) + '" style="left:' + g.X(x).toFixed(1) + 'px;top:' + g.Y(y).toFixed(1) +
+  return '<div class="tile ' + cls + (narrow ? " narrow" : "") + (small ? " small" : "") + '" ' + (attrs || "") + ' title="' + esc(title) + '" style="left:' + r.l.toFixed(1) + 'px;top:' + r.t.toFixed(1) +
     'px;width:' + W.toFixed(1) + 'px;height:' + H.toFixed(1) + 'px">' +
-    (mark && W >= 26 ? '<span class="gi ' + mark + '" title="' + (mark === "g" ? "In a saved group" : "Not in any group") + '">' + (mark === "g" ? ICON_GROUPED : ICON_LOOSE) + '</span>' : '') +
-    (n ? '<span class="n">' + n + '</span>' : '') +
+    (mark && W >= 26 && H >= 20 ? '<span class="gi ' + mark + '">' + (mark === "g" ? ICON_GROUPED : ICON_LOOSE) + '</span>' : '') +
+    (n && !small && H >= 44 ? '<span class="n">' + n + '</span>' : '') +
     (small ? '' : '<div class="t">' + esc(title) + '</div>' + (sub ? '<div class="s">' + sub + '</div>' : '')) + '</div>';
+}
+
+// Windows mostly hidden behind others on their screen - so a layout stacked behind another is
+// known to be behind, and its chip says so.
+function hiddenSet(wins) {
+  const res = new Set(), byMon = new Map();
+  for (const w of wins) { if (!byMon.has(w.mon)) byMon.set(w.mon, []); byMon.get(w.mon).push(w); }
+  for (const list of byMon.values()) {
+    const above = [];
+    for (const w of list.slice().sort((a, b) => a.z - b.z)) {
+      let hit = 0, all = 0;
+      for (let i = 0; i < 12; i++) for (let j = 0; j < 8; j++) {
+        const px = w.vx + (i + .5) * w.vw / 12, py = w.vy + (j + .5) * w.vh / 8; all++;
+        if (above.some(a => px >= a.vx && px < a.vx + a.vw && py >= a.vy && py < a.vy + a.vh)) hit++;
+      }
+      if (hit / all > 0.7) res.add(w.h); else above.push(w);
+    }
+  }
+  return res;
+}
+
+// Grouped means in a saved group, or in a snap group Windows made.
+function statusOf(w, mem, snaps) {
+  const gs = mem.get(w.h);
+  if (gs) return { k: "g", groups: gs };
+  const sd = snaps.get(w.h);
+  if (sd) return { k: "s", snap: sd };
+  return { k: "u" };
+}
+const matches = w => !query || (w.title || "").toLowerCase().includes(query);
+const passes = (w, st) => (filter === "all" || (filter === "grouped") === (st.k !== "u")) && matches(w);
+
+// The screens the current selection is on.
+function focusMons() {
+  if (view.kind === "detected") { const d = curDetected(); return d ? new Set([d.mon]) : null; }
+  if (view.kind === "group") {
+    const gr = S.groups.find(x => x.id === view.id);
+    if (!gr) return null;
+    const s = new Set(gr.slots.map(x => x.mon).filter(x => x >= 0));
+    for (const sl of gr.slots) if (sl.open) { const w = winByH(sl.h); if (w && !w.min) s.add(w.mon); }
+    return s.size ? s : null;
+  }
+  return null;
+}
+
+// Every group on one screen, front to back: saved groups and the snap groups Windows made.
+function monLayers(m, wins, mem, hidden) {
+  const out = [];
+  for (const gr of S.groups) {
+    let n, z, behind;
+    if (view.kind === "group" && view.id === gr.id) {
+      n = gr.slots.filter(s => s.mon === m.i).length; z = -1; behind = false;
+    } else {
+      const ws = gr.slots.filter(s => s.open).map(s => winByH(s.h)).filter(w => w && !w.min && w.mon === m.i && (scope === "all" || w.claude));
+      n = ws.length;
+      if (n) { z = Math.min(...ws.map(w => w.z)); behind = ws.every(w => hidden.has(w.h)); }
+    }
+    if (n) out.push({ t: "g", id: gr.id, name: gr.name, n, z, behind, snap: gr.snap, total: gr.slots.length });
+  }
+  for (const d of (S.detectedAll || [])) {
+    const hs = d.snap || [];
+    if (d.mon !== m.i || hs.length < 2 || hs.every(h => mem.has(h))) continue;
+    const ws = hs.map(winByH).filter(w => w && (scope === "all" || w.claude));
+    if (ws.length < 2) continue;
+    out.push({ t: "d", key: d.key, name: "Snap group", n: ws.length, z: Math.min(...ws.map(w => w.z)), behind: !!d.hidden, unsaved: true });
+  }
+  return out.sort((a, b) => a.z - b.z);
 }
 
 function renderLegend() {
   setHTML($("#lgG"), ICON_GROUPED + "Grouped");
-  setHTML($("#lgU"), ICON_LOOSE + "Not grouped - just placed");
+  setHTML($("#lgU"), ICON_LOOSE + "Not grouped");
 }
 
 function renderStage() {
   renderLegend();
   const c = $("#canvas");
   if (!S.monitors.length) { setHTML(c, ""); return; }
-  const g = geometry();
-  let html = "", labels = "";
-  let focusMons = null;
-  if (view.kind === "detected" && curDetected()) focusMons = new Set([curDetected().mon]);
-  if (view.kind === "group") { const gr = S.groups.find(x => x.id === view.id); if (gr) focusMons = new Set(gr.slots.map(s => s.mon)); }
-
-  for (const m of S.monitors) {
-    const dim = focusMons && !focusMons.has(m.i);
-    html += '<div class="mon' + (dim ? " dim" : "") + '" style="left:' + g.X(m.x).toFixed(1) + 'px;top:' + g.Y(m.y).toFixed(1) + 'px;width:' + (m.w * g.s).toFixed(1) + 'px;height:' + (m.h * g.s).toFixed(1) + 'px"></div>';
-    labels += '<span class="ml' + (dim ? " dim" : "") + '" style="left:' + (g.X(m.x) + 8).toFixed(1) + 'px;top:' + (g.Y(m.y + m.h) - 1).toFixed(1) + 'px"><b>' + esc(m.name) + '</b> &nbsp;' + m.w + '&times;' + m.h + '</span>';
-  }
-
-  const wins = winsInScope().filter(w => !w.min).sort((a, b) => b.z - a.z);   // bottom of the stack drawn first
-  const mem = membership();
-  const snaps = snapGroups();
+  const focus = focusMons();
+  const zoomed = !!focus && !zoomAll;
+  const mons = zoomed ? S.monitors.filter(m => focus.has(m.i)) : S.monitors;
+  const g = geometry(mons);
+  const s = g.s;
+  const wins = winsInScope().filter(w => !w.min);
+  const mem = membership(), snaps = snapGroups();
+  const hidden = hiddenSet(wins);
   const names = h => esc((mem.get(h) || []).map(x => x.name).join(" / "));
 
-  // Which group is lit: the one selected, the one whose screen is selected, the one hovered.
-  const active = new Set();
+  // What is lit: the selected group, the group a selected screen layout was saved as, whatever
+  // is hovered (a group row, a chip).
+  const active = new Set(), activeDet = new Set();
   if (view.kind === "group") active.add(view.id);
   if (view.kind === "detected") {
     const d = curDetected();
+    activeDet.add(view.key);
     const gr = d && d.savedAs && S.groups.find(x => x.name === d.savedAs);
     if (gr) active.add(gr.id);
   }
-  if (hoverGroup) active.add(hoverGroup);
-  const L = groupLayers(g, active, view.kind === "group");
-  html += L.html; labels += L.labels;
+  const litWin = new Set();
+  for (const gr of S.groups) if (active.has(gr.id)) for (const sl of gr.slots) if (sl.open) litWin.add(sl.h);
+  for (const d of (S.detectedAll || [])) if (activeDet.has(d.key)) for (const h of (d.snap && d.snap.length ? d.snap : d.handles)) litWin.add(h);
 
-  if (view.kind === "live") {
-    for (const w of wins) {
-      const on = picked.has(w.h), gs = mem.get(w.h), sd = !gs && snaps.get(w.h);
-      const lit = gs && gs.some(x => active.has(x.id));
-      const sub = on ? "picked" : gs ? names(w.h) : sd ? "snap group" : (w.max ? "maximized &middot; not grouped" : "not grouped");
-      html += tileHtml("pick" + (on ? " on" : "") + (lit ? " hl" : "") + (gs || sd ? "" : " loose") + (sd ? " snapm" : ""), g, w.vx, w.vy, w.vw, w.vh, w.title, sub,
-                       'data-pick="' + w.h + '"', null, gs || sd ? "g" : "u");
+  let html = "";
+  for (const m of mons) {
+    const cd = g.card.get(m.i);
+    const dim = !!focus && !focus.has(m.i);
+    const layers = monLayers(m, wins, mem, hidden);
+
+    // ---- header: name, size, the groups on it front to back
+    const chips = layers.map((L, k) => {
+      const on = L.t === "g" ? active.has(L.id) : activeDet.has(L.key);
+      const attr = L.t === "g" ? 'data-gsel="' + esc(L.id) + '" data-hg="' + esc(L.id) + '"' : 'data-dsel="' + esc(L.key) + '" data-hd="' + esc(L.key) + '"';
+      const tip = L.name + " - " + plural(L.n, "window") + " here" + (L.behind ? ", behind other windows" : k === 0 && layers.length > 1 ? ", in front" : "") + (L.unsaved ? " - made in Windows, not saved" : "");
+      return '<span class="chip' + (on ? " on" : "") + (L.unsaved ? " snap" : "") + (L.behind ? " back" : "") + '" ' + attr + ' title="' + esc(tip) + '">' +
+        '<span class="cn">' + esc(L.name) + '</span><i>' + L.n + '</i></span>';
+    }).join("");
+    html += '<div class="mh' + (dim ? " dim" : "") + '" style="left:' + cd.left.toFixed(1) + 'px;top:' + (cd.top - HEAD).toFixed(1) + 'px;width:' + cd.w.toFixed(1) + 'px">' +
+      '<span class="mn" title="' + esc(m.name + " - " + m.w + " x " + m.h) + '"><b>' + esc(m.name) + '</b>' + (!layers.length && cd.w > 250 ? ' ' + m.w + '&times;' + m.h : '') + '</span>' + chips + '</div>';
+
+    // ---- the group layers: one frame behind each group's windows on this screen
+    let paths = "";
+    const pad = 5;
+    const frame = rs => rs.map(r => ({ l: r.l - pad, t: r.t - pad, r: r.r + pad, b: r.b + pad }));
+    for (const gr of S.groups) {
+      const fromSlots = view.kind === "group" && view.id === gr.id;
+      const rs = [];
+      for (const sl of gr.slots) {
+        let r = null;
+        if (fromSlots) { if (sl.mon === m.i) r = inCard(cd, s, sl.x + 7, sl.y, sl.w - 14, sl.h2 - 7); }
+        else if (sl.open) { const w = winByH(sl.h); if (w && !w.min && w.mon === m.i && (scope === "all" || w.claude)) r = inCard(cd, s, w.vx, w.vy, w.vw, w.vh); }
+        if (r) rs.push(r);
+      }
+      if (!rs.length) continue;
+      const on = active.has(gr.id), dimL = (view.kind === "group" && !on) || (!on && rs.length && !fromSlots && [...gr.slots].filter(sl => sl.open).every(sl => hidden.has(sl.h)));
+      const u = unionOutline(frame(rs));
+      paths += '<g data-lg="' + esc(gr.id) + '" class="' + (on ? "on" : "") + (dimL ? " dim" : "") + '"><path class="lf" d="' + u.fill + '"/><path class="le" d="' + u.edges + '"/></g>';
     }
-  } else if (view.kind === "detected") {
-    // Ticked windows are drawn last, so a layout sitting BEHIND others is shown in front while you
-    // look at it. Every window on that screen can be clicked in or out - hidden ones included.
-    const d = curDetected();
-    const sel = dpick || new Set(d ? d.handles : []);
-    const mon = d ? d.mon : -1;
-    // Draw order: everything else, then this layout's windows that were taken out (dashed, still
-    // clickable - they must not vanish under whatever sits in front of them), then the ticked ones.
-    const own = new Set(d ? d.handles : []);
-    const order = wins.filter(w => !sel.has(w.h) && !own.has(w.h))
-      .concat(wins.filter(w => !sel.has(w.h) && own.has(w.h)))
-      .concat(wins.filter(w => sel.has(w.h)));
-    for (const w of order) {
-      const gs = mem.get(w.h), sd = !gs && snaps.get(w.h);
-      if (sel.has(w.h)) html += tileHtml("on pick" + (sd ? " snapm" : ""), g, w.vx, w.vy, w.vw, w.vh, w.title,
-                                         (gs ? names(w.h) : sd ? "snap group" : "not grouped") + " &middot; click to drop", 'data-dpick="' + w.h + '"', null, gs || sd ? "g" : "u");
-      else if (w.mon === mon) html += tileHtml("off", g, w.vx, w.vy, w.vw, w.vh, w.title, "click to add", 'data-dpick="' + w.h + '"', null, gs || sd ? "g" : "u");
-      else html += tileHtml("ghost", g, w.vx, w.vy, w.vw, w.vh, w.title, "", "", null, gs || sd ? "g" : "u");
+    for (const d of (S.detectedAll || [])) {
+      const hs = d.snap || [];
+      if (d.mon !== m.i || hs.length < 2 || hs.every(h => mem.has(h))) continue;
+      const rs = hs.map(winByH).filter(w => w && (scope === "all" || w.claude)).map(w => inCard(cd, s, w.vx, w.vy, w.vw, w.vh)).filter(Boolean);
+      if (rs.length < 2) continue;
+      const on = activeDet.has(d.key);
+      const u = unionOutline(frame(rs));
+      paths += '<g data-ld="' + esc(d.key) + '" class="snapl' + (on ? " on" : "") + (view.kind === "group" || (!on && d.hidden) ? " dim" : "") + '"><path class="lf" d="' + u.fill + '"/><path class="le" d="' + u.edges + '"/></g>';
     }
-  } else if (view.kind === "group") {
-    const gr = S.groups.find(x => x.id === view.id);
-    const used = new Set(gr ? gr.slots.filter(s => s.open).map(s => s.h) : []);
-    for (const w of wins) if (!used.has(w.h)) html += tileHtml("ghost", g, w.vx, w.vy, w.vw, w.vh, w.title, "", "", null, mem.has(w.h) ? "g" : "u");
-    if (gr) {
-      const order = gr.slots.slice().sort((a, b) => b.z - a.z);
-      for (const s of order) {
-        const n = String(s.i + 1).padStart(2, "0");
+
+    // ---- the windows
+    let tiles = "";
+    const here = wins.filter(w => w.mon === m.i).sort((a, b) => b.z - a.z);     // bottom of the stack first
+    if (view.kind === "live") {
+      // A lit group is drawn on top, so a group stacked behind another shows while you point at it.
+      const order = here.filter(w => !litWin.has(w.h)).concat(here.filter(w => litWin.has(w.h)));
+      for (const w of order) {
+        const st = statusOf(w, mem, snaps), on = picked.has(w.h);
+        const out = !on && !passes(w, st);
+        const sub = on ? "picked" : st.k === "g" ? names(w.h) : st.k === "s" ? "snap group &middot; not saved" : (w.max ? "maximized &middot; not grouped" : "not grouped");
+        const r = inCard(cd, s, w.vx, w.vy, w.vw, w.vh); if (!r) continue;
+        tiles += tileHtml("pick" + (on ? " on" : "") + (litWin.has(w.h) ? " hl" : "") + (st.k === "u" ? " loose" : "") + (st.k === "s" ? " snapm" : "") +
+                          (out ? " out" : "") + (query && matches(w) ? " match" : ""), r, w.title, sub, 'data-pick="' + w.h + '"' + memAttrs(w.h, mem, snaps), null, st.k === "u" ? "u" : "g");
+      }
+    } else if (view.kind === "detected") {
+      // Ticked windows are drawn last, so a layout sitting BEHIND others is shown in front while you
+      // look at it. Every window on that screen can be clicked in or out - hidden ones included.
+      const d = curDetected();
+      const sel = dpick || new Set(d ? d.handles : []);
+      const own = new Set(d ? d.handles : []);
+      const order = here.filter(w => !sel.has(w.h) && !own.has(w.h))
+        .concat(here.filter(w => !sel.has(w.h) && own.has(w.h)))
+        .concat(here.filter(w => sel.has(w.h)));
+      for (const w of order) {
+        const st = statusOf(w, mem, snaps);
+        const r = inCard(cd, s, w.vx, w.vy, w.vw, w.vh); if (!r) continue;
+        const mark = st.k === "u" ? "u" : "g";
+        const ma = memAttrs(w.h, mem, snaps);
+        if (sel.has(w.h)) tiles += tileHtml("on pick" + (st.k === "s" ? " snapm" : ""), r, w.title,
+                                            (st.k === "g" ? names(w.h) : st.k === "s" ? "snap group" : "not grouped") + " &middot; click to drop", 'data-dpick="' + w.h + '"' + ma, null, mark);
+        else if (d && w.mon === d.mon) tiles += tileHtml("off", r, w.title, "click to add", 'data-dpick="' + w.h + '"' + ma, null, mark);
+        else tiles += tileHtml("ghost", r, w.title, "", ma, null, mark);
+      }
+    } else if (view.kind === "group") {
+      const gr = S.groups.find(x => x.id === view.id);
+      const used = new Set(gr ? gr.slots.filter(sl => sl.open).map(sl => sl.h) : []);
+      for (const w of here) if (!used.has(w.h)) {
+        const r = inCard(cd, s, w.vx, w.vy, w.vw, w.vh);
+        if (r) tiles += tileHtml("ghost", r, w.title, "", memAttrs(w.h, mem, snaps), null, mem.has(w.h) ? "g" : "u");
+      }
+      if (gr) for (const sl of gr.slots.slice().sort((a, b) => b.z - a.z)) {
+        if (sl.mon !== m.i) continue;
         // a slot's rect includes the invisible 7px resize border; draw the visible part
-        const x = s.x + 7, y = s.y, w = s.w - 14, h = s.h2 - 7;
-        if (s.open) html += tileHtml("on", g, x, y, w, h, s.title, s.zone ? "open &middot; snaps" : "open &middot; placed", 'data-slot="' + s.i + '"', n, "g");
-        else html += tileHtml("missing", g, x, y, w, h, s.title, "not open &middot; replace", 'data-miss="' + s.i + '"', n);
+        const r = inCard(cd, s, sl.x + 7, sl.y, sl.w - 14, sl.h2 - 7); if (!r) continue;
+        const n = String(sl.i + 1).padStart(2, "0");
+        const how = sl.layout ? "snap group" : sl.zone ? "snaps" : "placed";
+        if (sl.open) tiles += tileHtml("on", r, sl.title, "open &middot; " + how, 'data-slot="' + sl.i + '" data-gm="' + esc(gr.id) + '"', n, "g");
+        else tiles += tileHtml("missing", r, sl.title, "not open &middot; replace", 'data-miss="' + sl.i + '" data-gm="' + esc(gr.id) + '"', n);
       }
     }
+    html += '<div class="mon' + (dim ? " dim" : "") + '" style="left:' + cd.left.toFixed(1) + 'px;top:' + cd.top.toFixed(1) + 'px;width:' + cd.w.toFixed(1) + 'px;height:' + cd.h.toFixed(1) + 'px">' +
+      (paths ? '<svg class="layers">' + paths + '</svg>' : '') + tiles + '</div>';
   }
-  setHTML(c, html + labels);     // labels last: always readable, never buried under a window
+  setHTML(c, html);
+  applyHover();
+}
+
+// Pointing at a group (its chip, or its row on the left) lifts its windows above the others and
+// lights its frame - by toggling classes. Re-drawing the map on hover replaced the chip under the
+// mouse between press and release, and the click never arrived.
+function applyHover() {
+  const c = $("#canvas");
+  c.querySelectorAll(".hv").forEach(e => e.classList.remove("hv"));
+  const q = [];
+  if (hoverGroup) { const v = CSS.escape(hoverGroup); q.push('[data-gm~="' + v + '"]', '[data-lg="' + v + '"]', '[data-hg="' + v + '"]'); }
+  if (hoverDet) { const v = CSS.escape(hoverDet); q.push('[data-dm="' + v + '"]', '[data-ld="' + v + '"]', '[data-hd="' + v + '"]'); }
+  if (q.length) c.querySelectorAll(q.join(",")).forEach(e => e.classList.add("hv"));
 }
 
 function renderDetail() {
   const el = $("#detail");
   if (view.kind === "live") {
     $("#viewLabel").textContent = "Everything on screen";
+    const mem = membership(), snaps = snapGroups();
+    const all = winsInScope();
+    const st = new Map(all.map(w => [w.h, statusOf(w, mem, snaps)]));
+    const nGrouped = all.filter(w => st.get(w.h).k !== "u").length;
     const n = picked.size;
+    const rows = all.filter(w => picked.has(w.h) || passes(w, st.get(w.h)))
+                    .sort((a, b) => (st.get(a.h).k === "u" ? 0 : 1) - (st.get(b.h).k === "u" ? 0 : 1) || (a.mon - b.mon) || (a.z - b.z));
+    const addOpts = '<option value="">Add to group...</option>' + S.groups.map(gr => '<option value="' + esc(gr.id) + '">' + esc(gr.name) + '</option>').join("");
+    const fl = (f, label) => '<button class="cnt' + (filter === f ? " on" : "") + '" data-filter="' + f + '">' + label + '</button>';
     setHTML(el,
-      '<div class="dhead"><div><div class="dtitle">' + (n ? plural(n, "window") + " picked" : "Pick windows on the map") + '</div>' +
-      '<div class="dmeta meta">' + plural(winsInScope().length, "window") + ' open &middot; ' +
-        (() => { const mem = membership(); const k = winsInScope().filter(w => mem.has(w.h)).length;
-                 return '<b>' + k + '</b> grouped &middot; ' + (winsInScope().length - k) + ' not grouped'; })() +
-        ' &middot; ' + plural(S.monitors.length, "screen") + '</div></div>' +
+      '<div class="dhead"><div><div class="dtitle">' + (n ? plural(n, "window") + " picked" : "Everything on screen") + '</div>' +
+      '<div class="dmeta meta">' + fl("all", plural(all.length, "window")) + ' &middot; ' + fl("grouped", '<b>' + nGrouped + '</b> grouped') + ' &middot; ' +
+        fl("loose", '<b>' + (all.length - nGrouped) + '</b> not grouped') + ' &middot; ' + plural(S.monitors.length, "screen") + '</div></div>' +
       '<div class="actions">' +
-        (n ? '<input id="newName" class="btn" style="width:220px;cursor:text" placeholder="Name this group" autocomplete="off">' : '') +
+        (n ? '<input id="newName" class="btn" style="width:200px;cursor:text" placeholder="Name a new group" autocomplete="off">' : '') +
         '<button class="btn primary" id="savePicked"' + (n ? "" : " disabled") + '>Save as group</button>' +
+        (n && S.groups.length ? '<select class="dark btnsel" id="addPicked">' + addOpts + '</select>' : '') +
         '<button class="btn" id="showPicked"' + (n ? "" : " disabled") + '>Show on screen</button>' +
         (n ? '<button class="btn ghost" id="clearPicked">Clear</button>' : '') +
       '</div></div>' +
-      '<p class="hint" style="margin-top:16px">Click windows on the map to pick them - across any screens. Or start from <b>On screen now</b>: every layout on every screen is listed there by itself - each snap group, and windows just placed side by side - several per screen if that is how they are.</p>');
+      (rows.length
+        ? '<div class="wl">' + rows.map(w => {
+            const s = st.get(w.h), on = picked.has(w.h);
+            const said = s.k === "g" ? '<span class="st g">' + esc(s.groups.map(x => x.name).join(" / ")) + '</span>'
+                       : s.k === "s" ? '<span class="st s">snap group &middot; not saved</span>'
+                       : '<span class="st u">not grouped</span>';
+            return '<div class="wrow' + (on ? " on" : "") + '" data-wpick="' + w.h + '">' +
+              '<span class="tick' + (on ? " on" : "") + '"></span>' +
+              '<span class="name">' + esc(w.title) + (w.min ? ' <i>minimized</i>' : '') + '</span>' +
+              '<span class="meta">' + esc(monName(w.mon)) + '</span>' + said +
+              '<button class="x fr" data-front="' + w.h + '" title="Bring to front">' + ICON_FRONT + '</button></div>';
+          }).join("") + '</div>'
+        : '<p class="hint" style="margin-top:16px">' + (query ? 'No window matches <b>' + esc(query) + '</b>.' : filter === "loose" ? 'Every window is in a group.' : 'Nothing here.') + '</p>') +
+      '<p class="hint" style="margin-top:14px">Tick windows here or click them on the map - across any screens - then save them as a group or add them to one. ' +
+        '<b>On screen now</b> lists every layout on every screen by itself, several per screen if that is how they are.</p>');
     return;
   }
 
@@ -771,13 +966,18 @@ function renderDetail() {
   const missing = gr.slots.filter(s => !s.open).length;
   const used = new Set(gr.slots.filter(s => s.open).map(s => s.h));
   const candidates = winsInScope().filter(w => !used.has(w.h));
+  const nLayout = gr.slots.filter(s => s.layout).length, nZone = gr.slots.filter(s => !s.layout && s.zone).length, nPlaced = gr.slots.length - nLayout - nZone;
+  const how = [nLayout ? nLayout + ' as a Windows snap group' : '', nZone ? nZone + ' snapped' : '', nPlaced ? nPlaced + ' placed exactly' : ''].filter(Boolean).join(', ');
+  const screens = [...new Set(gr.slots.map(s => monName(s.mon)))].join(" + ");
   setHTML(el,
     '<div class="dhead"><div><div class="dtitle"><input id="renameIn" value="' + esc(gr.name) + '" autocomplete="off"></div>' +
     '<div class="dmeta meta"><b>' + gr.open + '</b>/' + gr.slots.length + ' open' + (missing ? ' &middot; <span style="color:var(--amber)">' + missing + ' not open</span>' : '') +
-    ' &middot; saved ' + esc(gr.saved || "") +
-    ' &middot; ' + gr.slots.filter(s => s.zone).length + ' snap in Windows' + (gr.slots.some(s => !s.zone) ? ', ' + gr.slots.filter(s => !s.zone).length + ' placed exactly' : '') + '</div></div>' +
+    ' &middot; ' + esc(screens) + ' &middot; saved ' + esc(gr.saved || "") + '</div>' +
+    '<div class="dmeta meta" style="margin-top:2px">Deploys ' + how + '</div></div>' +
     '<div class="actions">' +
       '<button class="btn primary" id="deployOne">Deploy</button>' +
+      '<button class="btn" id="frontGroup" title="Bring its windows on top of everything else, without moving them"' + (gr.open ? '' : ' disabled') + '>Bring to front</button>' +
+      '<button class="btn" id="minGroup" title="Minimize its windows"' + (gr.open ? '' : ' disabled') + '>Minimize</button>' +
       '<button class="btn" id="showGroup">Show on screen</button>' +
       '<button class="btn" id="updateGroup" title="Save where this group\'s windows are right now">Update positions</button>' +
       '<div class="switch' + (gr.auto ? " on" : "") + '" id="swGroupAuto" style="margin:0 6px" title="Put this group back by itself when its windows open"><span class="track"></span><span class="cap">Auto</span></div>' +
@@ -791,13 +991,16 @@ function renderDetail() {
         '<span class="name" style="' + (s.open ? "" : "color:var(--mute)") + '">' + esc(s.title) + '</span>' +
         '<span class="meta">' + esc(monName(s.mon)) + '</span>' +
         '<span class="meta">' + s.w + ' &times; ' + s.h2 + (s.max ? " max" : "") + '</span>' +
-        (s.open ? '<span class="st ok">open &middot; ' + (s.zone ? 'snaps' : 'placed') + '</span>'
+        (s.open ? '<span class="st ok">open &middot; ' + (s.layout ? 'snap group' : s.zone ? 'snaps' : 'placed') + '</span>'
                 : '<select class="dark" data-replace="' + s.i + '">' + opts + '</select>') +
         '<button class="x" title="Remove from group" data-remove="' + s.i + '">&times;</button>' +
       '</div>';
     }).join("") + '</div>' +
-    (gr.slots.some(s => !s.zone) ? '<p class="hint" style="margin-top:14px"><b>Snaps</b> means Deploy snaps it with Windows itself - square corners, shared edges, a real snap group. Windows only has shortcuts for halves and quarters of a screen, so a window in any other shape (thirds, a custom size) is <b>placed</b> exactly instead.</p>' : '') +
-    (missing ? '<p class="hint" style="margin-top:14px">A dashed slot is a window that is not open. Click it on the map, or use <b>Replace with</b>, to put another open window in that place.</p>' : ''));
+    '<p class="hint" style="margin-top:14px">' +
+      (nLayout ? '<b>Snap group</b>: windows that together fill a screen are deployed through Snap Layouts and Snap Assist, the way you would do it by hand - so Windows makes them one group, listed as a Group in the taskbar and in Alt+Tab. ' : '') +
+      (nZone ? '<b>Snaps</b>: snapped to its half or quarter on its own. ' : '') +
+      (nPlaced ? '<b>Placed</b>: put at its exact position and size - for windows that do not fill a screen together. ' : '') + '</p>' +
+    (missing ? '<p class="hint" style="margin-top:10px">A dashed slot is a window that is not open. Click it on the map, or use <b>Replace with</b>, to put another open window in that place.</p>' : ''));
 }
 
 // ------------------------------------------------------------------ interaction
@@ -822,9 +1025,9 @@ $("#groups").addEventListener("dblclick", e => {
 $("#groups").addEventListener("mouseover", e => {
   const r = e.target.closest("[data-id]");
   const id = r ? r.getAttribute("data-id") : null;
-  if (id !== hoverGroup) { hoverGroup = id; renderStage(); }
+  if (id !== hoverGroup) { hoverGroup = id; hoverDet = null; applyHover(); }
 });
-$("#groups").addEventListener("mouseleave", () => { if (hoverGroup) { hoverGroup = null; renderStage(); } });
+$("#groups").addEventListener("mouseleave", () => { if (hoverGroup) { hoverGroup = null; applyHover(); } });
 
 $("#detected").addEventListener("click", e => {
   const r = e.target.closest("[data-key]");
@@ -834,6 +1037,28 @@ $("#detected").addEventListener("click", e => {
   openDetected(key);
 });
 $("#deploySel").addEventListener("click", () => run("deploy", { ids: [...ticked] }));
+
+$("#filter").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  filter = b.dataset.f; localStorage.setItem("wg.filter", filter); render();
+});
+$("#zoom").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  zoomAll = b.dataset.z === "all"; localStorage.setItem("wg.zoomAll", zoomAll ? "1" : "0"); render();
+});
+$("#search").addEventListener("input", e => { query = e.target.value.trim().toLowerCase(); render(); });
+$("#search").addEventListener("keydown", e => { if (e.key === "Escape") { e.target.value = ""; query = ""; e.target.blur(); render(); e.stopPropagation(); } });
+document.addEventListener("keydown", e => {
+  if (e.key === "/" && !/INPUT|SELECT|TEXTAREA/.test((document.activeElement || {}).tagName || "")) { e.preventDefault(); $("#search").focus(); }
+});
+// Pointing at a chip lifts that group above the others on the map - the way to see a group
+// stacked behind another one on the same screen.
+$("#canvas").addEventListener("mouseover", e => {
+  const c = e.target.closest("[data-hg],[data-hd]");
+  const g = c ? c.getAttribute("data-hg") : null, d = c ? c.getAttribute("data-hd") : null;
+  if (g !== hoverGroup || d !== hoverDet) { hoverGroup = g; hoverDet = d; applyHover(); }
+});
+$("#canvas").addEventListener("mouseleave", () => { if (hoverGroup || hoverDet) { hoverGroup = null; hoverDet = null; applyHover(); } });
 
 $("#scope").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
@@ -849,15 +1074,28 @@ $("#swSnap").addEventListener("click", () => run("setting", { key: "keepSnaps", 
 
 $("#canvas").addEventListener("click", e => {
   const gl = e.target.closest("[data-gsel]");
-  if (gl) { view = { kind: "group", id: gl.getAttribute("data-gsel") }; closePop(); render(); return; }
+  if (gl) {
+    const id = gl.getAttribute("data-gsel");
+    if (view.kind === "group" && view.id === id) { backToAll(); return; }      // click again: deselect
+    view = { kind: "group", id }; dpick = null; closePop(); render(); return;
+  }
   const dl = e.target.closest("[data-dsel]");
-  if (dl) { openDetected(dl.getAttribute("data-dsel")); return; }
+  if (dl) { const k = dl.getAttribute("data-dsel"); if (view.kind === "detected" && view.key === k) backToAll(); else openDetected(k); return; }
   const dp = e.target.closest("[data-dpick]");
   if (dp && dpick) { const h = dp.getAttribute("data-dpick"); dpick.has(h) ? dpick.delete(h) : dpick.add(h); render(); return; }
   const p = e.target.closest("[data-pick]");
   if (p) { const h = p.getAttribute("data-pick"); picked.has(h) ? picked.delete(h) : picked.add(h); render(); return; }
   const m = e.target.closest("[data-miss]");
   if (m) { openReplace(+m.getAttribute("data-miss"), m.getBoundingClientRect()); return; }
+});
+
+// Double-click a window on the map: bring it to the front.
+$("#canvas").addEventListener("dblclick", e => {
+  const p = e.target.closest("[data-pick],[data-dpick],[data-slot]");
+  if (!p) return;
+  let h = p.getAttribute("data-pick") || p.getAttribute("data-dpick");
+  if (!h && view.kind === "group") { const gr = S.groups.find(x => x.id === view.id); const sl = gr && gr.slots[+p.getAttribute("data-slot")]; h = sl && sl.h; }
+  if (h) { picked.delete(h); run("frontWindow", { handle: h }); }
 });
 
 function openReplace(index, rect) {
@@ -888,6 +1126,12 @@ $("#detail").addEventListener("click", async e => {
   const gr = view.kind === "group" ? S.groups.find(x => x.id === view.id) : null;
 
   if (id === "clearPicked") { picked.clear(); render(); }
+  const fl = e.target.closest("[data-filter]");
+  if (fl) { filter = fl.getAttribute("data-filter"); localStorage.setItem("wg.filter", filter); render(); return; }
+  const fr = e.target.closest("[data-front]");
+  if (fr) { run("frontWindow", { handle: fr.getAttribute("data-front") }); return; }
+  const wp = e.target.closest("[data-wpick]");
+  if (wp) { const h = wp.getAttribute("data-wpick"); picked.has(h) ? picked.delete(h) : picked.add(h); render(); return; }
   if (id === "showPicked") run("overlayHandles", { handles: [...picked], label: "Picked" });
   if (id === "savePicked" || id === "saveDetected") {
     const name = ($("#newName") && $("#newName").value.trim()) || "";
@@ -916,6 +1160,8 @@ $("#detail").addEventListener("click", async e => {
   }
   if (!gr) return;
   if (id === "deployOne") run("deploy", { ids: [gr.id] });
+  if (id === "frontGroup") run("front", { id: gr.id });
+  if (id === "minGroup") run("minimize", { id: gr.id });
   if (id === "showGroup") run("overlay", { id: gr.id });
   if (id === "updateGroup") run("update", { id: gr.id });
   if (e.target.closest("#swGroupAuto")) run("auto", { id: gr.id, on: !gr.auto });
@@ -930,6 +1176,10 @@ $("#detail").addEventListener("click", async e => {
 });
 
 $("#detail").addEventListener("change", e => {
+  if (e.target.id === "addPicked" && e.target.value) {
+    run("addToGroup", { id: e.target.value, handles: [...picked] }).then(() => { picked.clear(); render(); }, () => {});
+    return;
+  }
   const s = e.target.closest("[data-replace]");
   if (s && s.value && view.kind === "group") run("replace", { id: view.id, index: +s.getAttribute("data-replace"), handle: s.value });
 });

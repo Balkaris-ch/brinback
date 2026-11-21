@@ -12,6 +12,11 @@ if not exist "%CSC%" (
 )
 
 if not exist "assets/app.ico" powershell -NoProfile -ExecutionPolicy Bypass -File "tools/make-icon.ps1"
+if not exist "obj/Interop.UIAutomationClient.dll" powershell -NoProfile -ExecutionPolicy Bypass -File "tools/make-interop.ps1"
+if not exist "obj/Interop.UIAutomationClient.dll" (
+  echo Could not generate the UI Automation interop from Windows' own type library.
+  exit /b 1
+)
 if not exist dist mkdir dist
 
 "%CSC%" /nologo /target:winexe /optimize+ /platform:anycpu ^
@@ -19,6 +24,7 @@ if not exist dist mkdir dist
   /win32icon:assets\app.ico ^
   /resource:src\ui\index.html,WindowGroups.index.html ^
   /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll ^
+  /link:obj\Interop.UIAutomationClient.dll ^
   src\WindowGroups.cs
 if errorlevel 1 (
   echo.
