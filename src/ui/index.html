@@ -293,6 +293,10 @@
   .toast.err { border-left-color: #ff6b5b; }
   .offline { position: fixed; inset: 58px 0 0 0; display: none; place-items: center; background: rgba(10,10,10,.85); z-index: 50; color: var(--mute); }
   .offline.show { display: grid; }
+  .access { position: fixed; left: 50%; top: 70px; transform: translateX(-50%); z-index: 45; display: none; align-items: center; gap: 18px;
+            background: var(--ink-3); border: 1px solid var(--line-3); border-left: 2px solid var(--amber); padding: 12px 14px 12px 18px; max-width: 820px; color: var(--mute); }
+  .access b { color: var(--paper); font-weight: 500; }
+  .access.show { display: flex; }
 </style>
 </head>
 <body>
@@ -303,7 +307,7 @@
     <div class="live"><span class="pulse" id="pulse"></span><span class="cap" id="liveLabel">Live</span></div>
     <div class="switch" id="swAuto" title="When a window that belongs to a group opens, put it in its place"><span class="track"></span><span class="cap">Auto-restore</span></div>
     <div class="switch" id="swSnap" title="Windows forgets snap groups when it restarts. Keep them as groups, so they come back."><span class="track"></span><span class="cap">Keep snap groups</span></div>
-    <div class="switch" id="swStart"><span class="track"></span><span class="cap">Start with Windows</span></div>
+    <div class="switch" id="swStart"><span class="track"></span><span class="cap" id="swStartLabel">Start with Windows</span></div>
   </header>
 
   <div class="body">
@@ -333,7 +337,8 @@
   </div>
 </div>
 <div class="toast" id="toast"></div>
-<div class="offline" id="offline"><div class="cap">Window Groups is not running. Start it from the Start menu.</div></div>
+<div class="offline" id="offline"><div class="cap">Window Groups is not running. Start it again.</div></div>
+<div class="access" id="access"><span><b>Window Groups needs Accessibility access</b> to read window names and move windows. macOS lets no app do that without your say-so.</span><button class="btn primary" id="grantAccess">Open System Settings</button></div>
 
 <script>
 "use strict";
@@ -496,6 +501,9 @@ function render() {
   $("#ver").textContent = S.version;
   $("#swAuto").classList.toggle("on", S.settings.autoRestore);
   $("#swStart").classList.toggle("on", S.settings.startWithWindows);
+  $("#swStartLabel").textContent = isMac() ? "Open at login" : "Start with Windows";
+  $("#swSnap").style.display = isMac() ? "none" : "";
+  $("#access").classList.toggle("show", isMac() && S.trusted === false);
   $("#swSnap").classList.toggle("on", !!S.settings.keepSnaps);
   $("#pulse").classList.toggle("off", !S.settings.autoRestore);
   $("#liveLabel").textContent = S.settings.autoRestore ? "Watching" : "Paused";
@@ -547,8 +555,9 @@ function miniLayout(g, cls) {
   if (!m) return '<div class="dot ' + cls + '"></div>';
   const W = 28, H = 18, sx = (W - 1) / m.w, sy = (H - 1) / m.h;
   const rects = g.slots.filter(s => s.mon === m.i).map(s => {
-    const x = Math.max(0, s.x + 7 - m.x) * sx, y = Math.max(0, s.y - m.y) * sy;
-    const w = Math.min(m.w, s.w - 14) * sx, h = Math.min(m.h, s.h2 - 7) * sy;
+    const v = slotVis(s);
+    const x = Math.max(0, v.x - m.x) * sx, y = Math.max(0, v.y - m.y) * sy;
+    const w = Math.min(m.w, v.w) * sx, h = Math.min(m.h, v.h) * sy;
     return '<rect x="' + (x + .5).toFixed(1) + '" y="' + (y + .5).toFixed(1) + '" width="' + Math.max(1, w - 1).toFixed(1) + '" height="' + Math.max(1, h - 1).toFixed(1) + '"/>';
   }).join("");
   return '<svg class="mini ' + cls + '" viewBox="0 0 ' + W + ' ' + H + '" aria-hidden="true">' + rects + '</svg>';
@@ -700,6 +709,13 @@ function statusOf(w, mem, snaps) {
   if (sd) return { k: "s", snap: sd };
   return { k: "u" };
 }
+// The visible part of a saved slot. On Windows a window's rectangle includes an invisible 7px
+// resize border on the left, right and bottom; the server says how wide it is (0 on a Mac).
+function slotVis(sl) {
+  const b = S && S.inset != null ? S.inset : 7;
+  return { x: sl.x + b, y: sl.y, w: sl.w - 2 * b, h: sl.h2 - b };
+}
+const isMac = () => !!S && S.platform === "mac";
 const matches = w => !query || (w.title || "").toLowerCase().includes(query);
 const passes = (w, st) => (filter === "all" || (filter === "grouped") === (st.k !== "u")) && matches(w);
 
@@ -799,7 +815,7 @@ function renderStage() {
       const rs = [];
       for (const sl of gr.slots) {
         let r = null;
-        if (fromSlots) { if (sl.mon === m.i) r = inCard(cd, s, sl.x + 7, sl.y, sl.w - 14, sl.h2 - 7); }
+        if (fromSlots) { if (sl.mon === m.i) { const v = slotVis(sl); r = inCard(cd, s, v.x, v.y, v.w, v.h); } }
         else if (sl.open) { const w = winByH(sl.h); if (w && !w.min && w.mon === m.i && (scope === "all" || w.claude)) r = inCard(cd, s, w.vx, w.vy, w.vw, w.vh); }
         if (r) rs.push(r);
       }
@@ -864,8 +880,8 @@ function renderStage() {
       }
       if (gr) for (const sl of gr.slots.slice().sort((a, b) => b.z - a.z)) {
         if (sl.mon !== m.i) continue;
-        // a slot's rect includes the invisible 7px resize border; draw the visible part
-        const r = inCard(cd, s, sl.x + 7, sl.y, sl.w - 14, sl.h2 - 7); if (!r) continue;
+        const v = slotVis(sl);
+        const r = inCard(cd, s, v.x, v.y, v.w, v.h); if (!r) continue;
         const n = String(sl.i + 1).padStart(2, "0");
         const how = sl.layout ? "snap group" : sl.zone ? "snaps" : "placed";
         if (sl.open) tiles += tileHtml("on", r, sl.title, "open &middot; " + how, 'data-slot="' + sl.i + '" data-gm="' + esc(gr.id) + '"', n, "g");
@@ -929,7 +945,7 @@ function renderDetail() {
           }).join("") + '</div>'
         : '<p class="hint" style="margin-top:16px">' + (query ? 'No window matches <b>' + esc(query) + '</b>.' : filter === "loose" ? 'Every window is in a group.' : 'Nothing here.') + '</p>') +
       '<p class="hint" style="margin-top:14px">Tick windows here or click them on the map - across any screens - then save them as a group or add them to one. ' +
-        '<b>On screen now</b> lists every layout on every screen by itself, several per screen if that is how they are.</p>');
+        '<b>On screen now</b> lists the layout on every screen' + (isMac() ? '' : ' by itself, several per screen if that is how they are') + '.</p>');
     return;
   }
 
@@ -1074,6 +1090,7 @@ $("#scope").addEventListener("click", e => {
 $("#backAll").addEventListener("click", backToAll);
 $("#swAuto").addEventListener("click", () => run("setting", { key: "autoRestore", value: !S.settings.autoRestore }));
 $("#swStart").addEventListener("click", () => run("setting", { key: "startWithWindows", value: !S.settings.startWithWindows }));
+$("#grantAccess").addEventListener("click", () => run("openAccessibility"));
 $("#swSnap").addEventListener("click", () => run("setting", { key: "keepSnaps", value: !S.settings.keepSnaps }));
 
 $("#canvas").addEventListener("click", e => {

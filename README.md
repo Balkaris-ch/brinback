@@ -2,9 +2,10 @@
 
 **Save window layouts. Bring them back.**
 
-A small Windows tray app for people who work across many windows and several screens. It sees
-how your windows are arranged on each screen, saves a set of them as a named group - which
-windows, where, how big, which one is on top - and puts the whole set back with one click.
+A small tray app for Windows - and a menu bar app for the Mac - for people who work across many
+windows and several screens. It sees how your windows are arranged on each screen, saves a set of
+them as a named group - which windows, where, how big, which one is on top - and puts the whole
+set back with one click.
 When the app that owns them restarts, the windows go back into their groups by themselves.
 
 It knows the [Claude desktop app](https://claude.ai/download): session windows are remembered
@@ -88,6 +89,41 @@ That compiles `src/WindowGroups.cs` with the C# compiler that ships with Windows
 Framework 4) into `dist/WindowGroups.exe`, with the interface embedded. One file, no
 dependencies.
 
+## On a Mac
+
+There is a Mac version too, in [`mac/`](mac/): the same interface and the same groups - save,
+deploy, auto-restore, the map, filters, Claude sessions remembered by session - as a menu bar app
+for macOS 13 (Ventura) or newer.
+
+**Install it with Claude.** Open Claude Code on the Mac and say:
+
+> Clone https://github.com/Balkaris-ch/window-groups and run `mac/build.sh --install`.
+
+That builds the app from source and puts it in `~/Applications` - no download to trust, no
+Gatekeeper warning, no admin password. Or do it yourself in Terminal:
+
+```
+git clone https://github.com/Balkaris-ch/window-groups
+cd window-groups
+mac/build.sh --install
+```
+
+It needs Apple's command line tools (`xcode-select --install`, if `swiftc` is missing).
+
+**One step only you can do:** macOS lets no app read or move another app's windows until you allow
+it. When asked, switch on *Window Groups* under **System Settings > Privacy & Security >
+Accessibility**. (After rebuilding, switch it off and on again there - each build is a new
+signature.)
+
+What is different on a Mac:
+
+- **No snap groups.** Windows' Snap Layouts form groups the taskbar knows about; macOS keeps
+  nothing of the kind, even with its own window tiling. A Mac group is put back at its exact
+  positions and sizes, which on a Mac is all there is.
+- Lives in the **menu bar** (four tiles, one lit), and opens its window from there.
+- *Open at login* instead of *Start with Windows*.
+- Groups are kept in `~/Library/Application Support/WindowGroups/groups.json`.
+
 ## Privacy and security
 
 - Everything stays on your PC. Groups are kept in `%APPDATA%/WindowGroups/groups.json`.
@@ -169,6 +205,9 @@ value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`), delete the ex
 | `tools/make-interop.ps1` | writes the UI Automation interop from the type library inside Windows; `build.cmd` runs it and links the few interfaces it needs into the exe |
 | `tools/make-icon.ps1` | draws `assets/app.ico` |
 | `tools/demo_server.py` | serves the interface against made-up windows, for screenshots |
+| `mac/WindowGroups.swift` | the Mac app: windows through the Accessibility API, the same interface in a WKWebView |
+| `mac/build.sh` | builds `Window Groups.app`; `--install` puts it in `~/Applications`, `--selftest` tests it |
+| `.github/workflows/mac.yml` | builds and self-tests the Mac app on a GitHub-hosted Mac on every change |
 
 ## License
 

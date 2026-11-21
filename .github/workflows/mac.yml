@@ -1,0 +1,26 @@
+name: Mac build
+
+# Compiles the Mac app and runs its self-test (the logic and the local server - no window is
+# touched) on a GitHub-hosted Mac, so a change to the shared interface or the Swift source is
+# checked on macOS even when nobody has a Mac at hand.
+on:
+  push:
+    paths: ["mac/**", "src/ui/**", ".github/workflows/mac.yml"]
+  pull_request:
+    paths: ["mac/**", "src/ui/**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and self-test
+        run: bash mac/build.sh --selftest
+      - name: Package
+        run: cd mac/dist && ditto -c -k --keepParent "Window Groups.app" WindowGroups-mac.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WindowGroups-mac
+          path: mac/dist/WindowGroups-mac.zip

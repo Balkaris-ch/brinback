@@ -1782,6 +1782,8 @@ namespace WindowGroups
             res["detectedAll"] = detected(false);
             res["claudeFound"] = wins.Any(w => w.IsClaude) || titles.Count > 0;
             res["version"] = "1.5.0";
+            res["platform"] = "windows";
+            res["inset"] = 7;          // the invisible resize border around every window
             return res;
         }
 

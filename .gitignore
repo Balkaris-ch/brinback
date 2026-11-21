@@ -4,3 +4,4 @@ dist/
 obj/
 *.tmp
 __pycache__/
+mac/dist/
