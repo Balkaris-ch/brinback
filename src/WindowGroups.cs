@@ -38,8 +38,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Save window layouts. Bring them back.")]
 [assembly: AssemblyProduct("Window Groups")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyVersion("1.3.0.0")]
-[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
 
 namespace WindowGroups
 {
@@ -616,6 +616,14 @@ namespace WindowGroups
             return D.Groups.FirstOrDefault(g => g.Id == id);
         }
 
+        // "Left", or "Left 2", "Left 3" ... - the first name no group has yet.
+        public static string FreeName(string baseName)
+        {
+            Func<string, bool> taken = x => D.Groups.Any(g => string.Equals(g.Name, x, StringComparison.OrdinalIgnoreCase));
+            if (!taken(baseName)) return baseName;
+            for (int i = 2; ; i++) if (!taken(baseName + " " + i)) return baseName + " " + i;
+        }
+
         public static string NewId()
         {
             return Guid.NewGuid().ToString("N").Substring(0, 10);
@@ -744,53 +752,85 @@ namespace WindowGroups
 
         public class Detected
         {
-            public int Mon; public string MonName; public bool Tiled; public double Coverage; public List<Win> Windows; public int Behind;
-            public List<Win> Snap = new List<Win>();     // the visible windows Windows has snapped - 2+ is a snap group
+            public int Mon; public string MonName; public string Kind;   // "snap" or "placed"
+            public int Index;                                            // nth layout found on this screen, top first
+            public bool Tiled; public double Coverage; public List<Win> Windows; public int Behind;
+            public bool Hidden;                                          // entirely behind other windows
+            public string Key { get { return Mon + "-" + Index; } }
+            public List<Win> Snap { get { return Kind == "snap" ? Windows : new List<Win>(); } }
         }
 
-        // What is arranged on each screen right now - meaning what you can SEE. Windows are walked
-        // from the top of the stack down, and one that is mostly hidden behind windows already
-        // counted is not part of the layout. The first version took every window on the screen:
-        // a session left open underneath a 2x2 made it five windows, overlapping, "loose", and
-        // the 2x2 was never recognised as the group it was saved as.
-        // Two or more visible windows is a layout; barely overlapping and filling most of the
-        // screen is a tiled one - what a snapped 2x2 or a side-by-side pair looks like.
+        // What is arranged on each screen right now. A screen can hold several layouts at once - a
+        // 3-column snap group in front of a 2x2 that is still snapped behind it is two groups, not
+        // one. The first version found one layout per screen; with two stacked it saw only the
+        // front one, and the snap keeper then overwrote the group saved from the back one.
+        //
+        //  - Snap layouts: Windows marks snapped windows, and the windows of one snap layout never
+        //    overlap each other. So snapped windows are taken top of the stack first and each joins
+        //    the first layout it does not overlap; one that overlaps every layout so far starts a
+        //    new one, further back. Two or more windows is a snap group - visible or not.
+        //  - Placed layouts: of the windows you can SEE (one mostly hidden behind others does not
+        //    count), those in no snap layout. Two or more is a layout too, just not a snapped one.
         public static List<Detected> Detect(List<Win> wins, List<Mon> mons, bool claudeOnly)
         {
             var res = new List<Detected>();
             foreach (var m in mons)
             {
                 var stack = wins.Where(w => w.Mon == m.Index && !w.Min && (!claudeOnly || w.IsClaude)).OrderBy(w => w.Z).ToList();
-                var ws = new List<Win>();
+
+                var visible = new List<Win>();
                 int behind = 0;
                 foreach (var w in stack)
                 {
-                    if (Covered(w, ws) > 0.7) { behind++; continue; }
-                    ws.Add(w);
+                    if (Covered(w, visible) > 0.7) { behind++; continue; }
+                    visible.Add(w);
                     if (w.Max) { behind += stack.Count - stack.IndexOf(w) - 1; break; }   // nothing below a maximized window shows
                 }
-                ws = ws.Where(w => !w.Max).ToList();
-                if (ws.Count < 2) continue;
-                double sum = 0, overlap = 0, inside = 0;
-                foreach (var w in ws)
+
+                var layers = new List<List<Win>>();
+                foreach (var w in stack.Where(x => x.Snapped))
                 {
-                    sum += (double)w.VW * w.VH;
-                    inside += Inter(w.VX, w.VY, w.VW, w.VH, m.X, m.Y, m.W, m.H);
+                    double area = Math.Max(1.0, (double)w.VW * w.VH);
+                    var home = layers.FirstOrDefault(L => L.All(o => Inter(w.VX, w.VY, w.VW, w.VH, o.VX, o.VY, o.VW, o.VH) < 0.05 * area));
+                    if (home != null) home.Add(w); else layers.Add(new List<Win> { w });
                 }
-                for (int i = 0; i < ws.Count; i++)
-                    for (int j = i + 1; j < ws.Count; j++)
-                        overlap += Inter(ws[i].VX, ws[i].VY, ws[i].VW, ws[i].VH, ws[j].VX, ws[j].VY, ws[j].VW, ws[j].VH);
-                var d = new Detected();
-                d.Mon = m.Index; d.MonName = m.Name;
-                d.Coverage = Math.Min(1.0, inside / ((double)m.W * m.H));
-                d.Tiled = sum > 0 && overlap / sum < 0.12 && d.Coverage > 0.55;
-                d.Windows = ws.OrderBy(w => w.VY / 200).ThenBy(w => w.VX).ToList();
-                d.Behind = behind;
-                var snapped = d.Windows.Where(w => w.Snapped).ToList();
-                if (snapped.Count >= 2) d.Snap = snapped;
-                res.Add(d);
+
+                int idx = 0;
+                var inSnap = new HashSet<long>();
+                foreach (var L in layers.Where(L => L.Count >= 2))
+                {
+                    var d = Make(m, L, "snap", idx++);
+                    d.Hidden = L.All(w => !visible.Contains(w));
+                    res.Add(d);
+                    foreach (var w in L) inSnap.Add(w.Handle);
+                }
+                var rest = visible.Where(w => !w.Max && !inSnap.Contains(w.Handle)).ToList();
+                if (rest.Count >= 2)
+                {
+                    var d = Make(m, rest, "placed", idx++);
+                    d.Behind = behind;
+                    res.Add(d);
+                }
             }
             return res;
+        }
+
+        static Detected Make(Mon m, List<Win> ws, string kind, int index)
+        {
+            double sum = 0, overlap = 0, inside = 0;
+            foreach (var w in ws)
+            {
+                sum += (double)w.VW * w.VH;
+                inside += Inter(w.VX, w.VY, w.VW, w.VH, m.X, m.Y, m.W, m.H);
+            }
+            for (int i = 0; i < ws.Count; i++)
+                for (int j = i + 1; j < ws.Count; j++)
+                    overlap += Inter(ws[i].VX, ws[i].VY, ws[i].VW, ws[i].VH, ws[j].VX, ws[j].VY, ws[j].VW, ws[j].VH);
+            var d = new Detected { Mon = m.Index, MonName = m.Name, Kind = kind, Index = index };
+            d.Coverage = Math.Min(1.0, inside / ((double)m.W * m.H));
+            d.Tiled = sum > 0 && overlap / sum < 0.12 && d.Coverage > 0.55;
+            d.Windows = ws.OrderBy(w => w.VY / 200).ThenBy(w => w.VX).ToList();
+            return d;
         }
 
         // How much of a window is hidden behind the given ones, sampled on a 20x20 grid - exact
@@ -822,17 +862,24 @@ namespace WindowGroups
     // Puts a window into its saved slot the first time it appears - not continuously, so moving
     // a window by hand afterwards is never fought. A new window is given a couple of seconds
     // first: the owning app positions it itself on creation, and its title often arrives late.
-    // Windows forgets every snap group when it restarts. This keeps them: a snap group that has
-    // held still for a few seconds is saved as a group named after its screen, and follows the
-    // snap layout on that screen as it changes. A saved group that already holds exactly those
-    // windows - one the user made - is never duplicated and never touched.
+    // Windows forgets every snap group when it restarts. This keeps them: every snap layout that
+    // has held still for twenty seconds is saved as a group, named after its screen ("Left",
+    // "Left 2", ...), and a kept one follows its layout as it is resized or as a window in it is
+    // swapped. Rules, each learned the hard way:
+    //  - a screen can hold several snap groups; a new layout gets a new group, it never replaces
+    //    another one;
+    //  - a kept group follows a layout only when they share at least half their windows AND the
+    //    kept group is not itself still on screen as a layout of its own;
+    //  - a group the user saved or edited (Snap = false) is never touched, and never duplicated.
     class SnapKeeper
     {
-        readonly Dictionary<int, KeyValuePair<string, DateTime>> seen = new Dictionary<int, KeyValuePair<string, DateTime>>();
+        readonly Dictionary<string, KeyValuePair<string, DateTime>> seen = new Dictionary<string, KeyValuePair<string, DateTime>>();
+
+        static string KeyOf(Slot x) { return !string.IsNullOrEmpty(x.SessionId) ? x.SessionId : (x.Process + ":" + x.Title); }
 
         public static string Signature(IEnumerable<Slot> slots)
         {
-            return string.Join("|", slots.Select(x => !string.IsNullOrEmpty(x.SessionId) ? x.SessionId : (x.Process + ":" + x.Title)).OrderBy(x => x));
+            return string.Join("|", slots.Select(KeyOf).OrderBy(x => x));
         }
 
         public void Tick(List<Win> open, List<Mon> mons)
@@ -840,32 +887,37 @@ namespace WindowGroups
             if (Snapper.Busy) return;
             lock (Store.Gate) if (!Store.D.KeepSnaps) { seen.Clear(); return; }
             var now = DateTime.Now;
-            var live = new HashSet<int>();
-            foreach (var d in Layouts.Detect(open, mons, false))
+            var layouts = Layouts.Detect(open, mons, false).Where(d => d.Kind == "snap").ToList();
+            var liveSets = layouts.Select(d => new HashSet<long>(d.Windows.Select(w => w.Handle))).ToList();
+            var alive = new HashSet<string>();
+            foreach (var d in layouts)
             {
-                if (d.Snap.Count < 2) continue;
-                live.Add(d.Mon);
-                var slots = Layouts.Snapshot(d.Snap);
-                string sig = Signature(slots) + "@" + string.Join(",", slots.OrderBy(x => x.X).ThenBy(x => x.Y).Select(x => x.X + ":" + x.Y + ":" + x.W + ":" + x.H));
+                var slots = Layouts.Snapshot(d.Windows);
+                string members = Signature(slots);
+                string full = members + "@" + string.Join(",", slots.OrderBy(x => x.X).ThenBy(x => x.Y).Select(x => x.X + ":" + x.Y + ":" + x.W + ":" + x.H));
+                alive.Add(members);
                 KeyValuePair<string, DateTime> prev;
-                if (!seen.TryGetValue(d.Mon, out prev) || prev.Key != sig) { seen[d.Mon] = new KeyValuePair<string, DateTime>(sig, now); continue; }
+                if (!seen.TryGetValue(members, out prev) || prev.Key != full) { seen[members] = new KeyValuePair<string, DateTime>(full, now); continue; }
                 if ((now - prev.Value).TotalSeconds < 20) continue;
-                Keep(d, slots, open, mons);
+                Keep(d, slots, members, open, mons, liveSets);
             }
-            foreach (var m in seen.Keys.Where(k => !live.Contains(k)).ToList()) seen.Remove(m);
+            foreach (var k in seen.Keys.Where(k => !alive.Contains(k)).ToList()) seen.Remove(k);
         }
 
-        void Keep(Layouts.Detected d, List<Slot> slots, List<Win> open, List<Mon> mons)
+        void Keep(Layouts.Detected d, List<Slot> slots, string members, List<Win> open, List<Mon> mons, List<HashSet<long>> liveSets)
         {
-            var handles = new HashSet<long>(d.Snap.Select(w => w.Handle));
-            string members = Signature(slots);
+            var handles = new HashSet<long>(d.Windows.Select(w => w.Handle));
+            var keys = new HashSet<string>(slots.Select(KeyOf));
             lock (Store.Gate)
             {
                 var titles = Claude.Titles();
+                var openOf = new Dictionary<Group, HashSet<long>>();
+                foreach (var g in Store.D.Groups)
+                    openOf[g] = new HashSet<long>(Layouts.Resolve(g, open, titles, mons).Where(x => x.Window != null).Select(x => x.Window.Handle));
+
                 foreach (var g in Store.D.Groups)
                 {
-                    var set = new HashSet<long>(Layouts.Resolve(g, open, titles, mons).Where(x => x.Window != null).Select(x => x.Window.Handle));
-                    if (!set.SetEquals(handles)) continue;
+                    if (!openOf[g].SetEquals(handles)) continue;
                     // Already kept. A kept snap group follows a resized layout; a user's group does not.
                     if (g.Snap && Moved(g.Slots, slots))
                     {
@@ -875,19 +927,26 @@ namespace WindowGroups
                     return;
                 }
                 if (Store.D.Dismissed.Contains(members)) return;
-                var mine = Store.D.Groups.FirstOrDefault(g => g.Snap && g.SnapScreen == d.MonName);
-                if (mine != null)
+
+                Group grew = null; double best = 0;
+                foreach (var g in Store.D.Groups.Where(x => x.Snap && x.SnapScreen == d.MonName))
                 {
-                    mine.Slots = slots; mine.Saved = DateTime.Now.ToString("dd MMM HH:mm");
-                    Log.Write("snap: the snap group on " + d.MonName + " changed - '" + mine.Name + "' follows it");
+                    if (liveSets.Any(set => set.Count >= 2 && set.SetEquals(openOf[g]))) continue;   // still on screen as its own layout
+                    var gk = new HashSet<string>(g.Slots.Select(KeyOf));
+                    double j = gk.Intersect(keys).Count() / (double)Math.Max(1, gk.Union(keys).Count());
+                    if (j >= 0.5 && j > best) { best = j; grew = g; }
+                }
+                if (grew != null)
+                {
+                    grew.Slots = slots; grew.Saved = DateTime.Now.ToString("dd MMM HH:mm");
+                    Log.Write("snap: '" + grew.Name + "' follows its layout on " + d.MonName + " (" + slots.Count + " windows)");
                 }
                 else
                 {
-                    string name = d.MonName;
-                    if (Store.D.Groups.Any(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase))) name = d.MonName + " snap";
+                    string name = Store.FreeName(d.MonName);
                     Store.D.Groups.Add(new Group { Id = Store.NewId(), Name = name, Snap = true, SnapScreen = d.MonName, Auto = true,
                                                    Slots = slots, Saved = DateTime.Now.ToString("dd MMM HH:mm") });
-                    Log.Write("snap: kept the snap group on " + d.MonName + " as '" + name + "' (" + slots.Count + " windows)");
+                    Log.Write("snap: kept a snap group on " + d.MonName + " as '" + name + "' (" + slots.Count + " windows)");
                 }
                 Store.Save();
             }
@@ -898,7 +957,7 @@ namespace WindowGroups
             if (a.Count != b.Count) return true;
             foreach (var x in b)
             {
-                var y = a.FirstOrDefault(s => (s.SessionId ?? s.Title) == (x.SessionId ?? x.Title));
+                var y = a.FirstOrDefault(s => KeyOf(s) == KeyOf(x));
                 if (y == null || Math.Abs(y.X - x.X) > 4 || Math.Abs(y.Y - x.Y) > 4 || Math.Abs(y.W - x.W) > 4 || Math.Abs(y.H - x.H) > 4) return true;
             }
             return false;
@@ -1394,6 +1453,7 @@ namespace WindowGroups
                 var set = new HashSet<long>(d.Windows.Select(w => w.Handle));
                 var match = savedSets.FirstOrDefault(kv => kv.Value.SetEquals(set));
                 return (object)new Dictionary<string, object> {
+                    { "key", d.Key }, { "kind", d.Kind }, { "hidden", d.Hidden }, { "index", d.Index },
                     { "mon", d.Mon }, { "monName", d.MonName }, { "tiled", d.Tiled }, { "coverage", Math.Round(d.Coverage, 2) }, { "behind", d.Behind },
                     { "snap", d.Snap.Select(w => (object)w.Handle.ToString()).ToList() },
                     { "handles", d.Windows.Select(w => (object)w.Handle.ToString()).ToList() },
@@ -1402,7 +1462,7 @@ namespace WindowGroups
             res["detected"] = detected(true);
             res["detectedAll"] = detected(false);
             res["claudeFound"] = wins.Any(w => w.IsClaude) || titles.Count > 0;
-            res["version"] = "1.3.0";
+            res["version"] = "1.4.0";
             return res;
         }
 
@@ -1454,7 +1514,9 @@ namespace WindowGroups
                         var existing = Store.D.Groups.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase));
                         if (existing != null && !B(b, "replace")) return Fail(409, "A group called " + existing.Name + " already exists.");
                         var grp = existing ?? new Group { Id = Store.NewId() };
-                        grp.Name = name; grp.Slots = slots; grp.Saved = DateTime.Now.ToString("dd MMM HH:mm");
+                        // Saving by hand makes it the user's group, even when it replaces one that
+                        // was kept from a snap layout - otherwise the keeper goes on rewriting it.
+                        grp.Name = name; grp.Slots = slots; grp.Saved = DateTime.Now.ToString("dd MMM HH:mm"); grp.Snap = false;
                         if (existing == null) Store.D.Groups.Add(grp);
                         Store.Save();
                         Log.Write("saved '" + name + "' with " + slots.Count + " window(s)");

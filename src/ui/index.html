@@ -157,6 +157,15 @@
   .tile.missing .s { color: var(--amber); }
   .tile.missing:hover { border-color: var(--amber); }
   .tile .n { position: absolute; right: 26px; top: 8px; font: 500 9px/1 var(--mono); color: var(--mute-3); }
+  .tile.narrow { padding: 6px 6px; gap: 3px; }
+  .tile.narrow .t { font-size: 10.5px; line-height: 1.2; -webkit-line-clamp: 6; padding-right: 11px; }
+  .tile.narrow .s { font-size: 7.5px; letter-spacing: .08em; }
+  .tile.narrow .gi { right: 4px; top: 5px; }
+  .tile.narrow .n { display: none; }
+  .tile.off { border-style: dashed; border-color: var(--line-3); background: var(--ink-2); cursor: pointer; }
+  .tile.off .t { color: var(--mute); }
+  .tile.off:hover { border-color: var(--mute); }
+  .row .name i { font-style: normal; font: 500 10px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute-2); margin-left: 6px; }
   .tile .t { padding-right: 16px; }
 
   /* grouped / not grouped */
@@ -202,7 +211,8 @@
   .empty-stage { position: absolute; inset: 0; display: grid; place-items: center; color: var(--mute-2); }
 
   /* ---------- detail */
-  .detail { border-top: 1px solid var(--line); margin-top: 18px; padding: 20px 26px 22px; max-height: 44vh; overflow: auto; }
+  /* fixed height: if it followed its content, the map above would resize and jump under the cursor */
+  .detail { border-top: 1px solid var(--line); margin-top: 18px; padding: 20px 26px 22px; height: 36vh; overflow: auto; }
   .dhead { display: flex; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
   .dtitle { font-weight: 300; font-size: 30px; letter-spacing: -.01em; line-height: 1.05; }
   .dtitle input { background: transparent; border: 0; border-bottom: 1px solid var(--line-3); outline: none; font-weight: 300; font-size: 30px; width: min(520px, 100%); padding: 0 0 4px; }
@@ -270,6 +280,7 @@
     <main>
       <div class="bar">
         <span class="cap" id="viewLabel">Everything on screen</span>
+        <button class="btn ghost" id="backAll" style="height:26px;padding:0 10px;display:none" title="Esc">&larr; Everything</button>
         <span class="legend cap"><span class="lg g" id="lgG"></span><span class="lg" id="lgU"></span></span>
         <div class="spacer"></div>
         <div class="seg" id="scope"><button data-s="claude">Claude</button><button data-s="all">All apps</button></div>
@@ -295,7 +306,23 @@ let scopeTouched = !!localStorage.getItem("wg.scope");
 const picked = new Set();           // handles picked in the live view
 const ticked = new Set(JSON.parse(localStorage.getItem("wg.ticked") || "[]"));
 let pop = null;
-let hoverGroup = null;              // group row under the mouse: lit up on the map
+let hoverGroup = null;
+let dpick = null;                   // windows ticked in the found layout being looked at
+
+const curDetected = () => view.kind === "detected" ? detectedInScope().find(x => x.key === view.key) : null;
+function openDetected(key) {
+  const d = detectedInScope().find(x => x.key === key);
+  view = d ? { kind: "detected", key } : { kind: "live" };
+  dpick = d ? new Set(d.handles) : null;
+  closePop(); render();
+}
+function backToAll() { view = { kind: "live" }; dpick = null; closePop(); render(); }
+// "Left", or "Left 2", "Left 3" ... - the first name no group has yet.
+function freeName(base) {
+  const taken = x => S.groups.some(g => g.name.toLowerCase() === x.toLowerCase());
+  if (!taken(base)) return base;
+  for (let i = 2; ; i++) if (!taken(base + " " + i)) return base + " " + i;
+}              // group row under the mouse: lit up on the map
 
 // Grouped: two stacked frames, the front one filled. Not grouped: one dashed frame.
 const ICON_GROUPED = '<svg class="ico" viewBox="0 0 12 12" aria-hidden="true"><path d="M3.5 3V.5h8v8H9" fill="none" stroke="currentColor"/><rect x=".5" y="3.5" width="8" height="8" fill="currentColor" fill-opacity=".22" stroke="currentColor"/></svg>';
@@ -391,9 +418,30 @@ function confirmBox(title, text, ok, danger) {
 // between mouse-down and mouse-up.
 function setHTML(el, html) { if (el._html !== html) { el._html = html; el.innerHTML = html; } }
 
+function choiceBox(title, text, buttons) {
+  return new Promise(res => {
+    const v = document.createElement("div");
+    v.className = "veil";
+    v.innerHTML = '<div class="modal"><div class="dtitle" style="font-size:22px">' + esc(title) + '</div><p>' + esc(text) + '</p><div class="row2">' +
+      '<button class="btn ghost" data-a="">Cancel</button>' +
+      buttons.map(b => '<button class="btn ' + (b.cls || "") + '" data-a="' + esc(b.value) + '">' + esc(b.label) + '</button>').join("") + '</div></div>';
+    v.addEventListener("click", e => {
+      const a = e.target.getAttribute("data-a");
+      if (a !== null || e.target === v) { v.remove(); res(a || null); }
+    });
+    document.body.appendChild(v);
+    const last = v.querySelectorAll("[data-a]"); last[last.length - 1].focus();
+  });
+}
+
 function closePop() { if (pop) { pop.remove(); pop = null; } }
 document.addEventListener("mousedown", e => { if (pop && !pop.contains(e.target)) closePop(); });
-document.addEventListener("keydown", e => { if (e.key === "Escape") closePop(); });
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if (pop) { closePop(); return; }
+  if (document.querySelector(".veil") || /INPUT|SELECT|TEXTAREA/.test((document.activeElement || {}).tagName || "")) return;
+  if (view.kind !== "live") backToAll();
+});
 
 // ------------------------------------------------------------------ render
 function render() {
@@ -405,6 +453,8 @@ function render() {
   $("#pulse").classList.toggle("off", !S.settings.autoRestore);
   $("#liveLabel").textContent = S.settings.autoRestore ? "Watching" : "Paused";
   document.querySelectorAll("#scope button").forEach(b => b.classList.toggle("on", b.dataset.s === scope));
+  $("#backAll").style.display = view.kind === "live" ? "none" : "";
+  if (view.kind === "detected" && !curDetected()) { view = { kind: "live" }; dpick = null; }
   renderGroups();
   renderDetected();
   renderStage();
@@ -445,20 +495,24 @@ function renderDetected() {
     setHTML(el, '<div style="padding:0 22px 16px" class="hint">No screen has two or more ' + (scope === "all" ? "" : "Claude ") + 'windows on it right now.</div>');
     return;
   }
+  const per = {}, nth = {};
+  ds.forEach(d => { per[d.mon] = (per[d.mon] || 0) + 1; });
   setHTML(el, ds.map(d => {
-    const sel = view.kind === "detected" && view.mon === d.mon;
+    const sel = view.kind === "detected" && view.key === d.key;
+    const isSnap = d.kind === "snap";
     const k = d.handles.filter(h => mem.has(h)).length, all = d.handles.length;
-    const sn = (d.snap || []).length, snapAll = sn >= 2 && sn === all;
-    const st = d.savedAs || k === all ? "g" : sn >= 2 ? "s" : k > 0 ? "p" : "u";
-    const said = d.savedAs ? 'Grouped &middot; <b>' + esc(d.savedAs) + '</b>' + (snapAll ? ' &middot; snapped' : '')
+    const st = d.savedAs || k === all ? "g" : isSnap ? "s" : k > 0 ? "p" : "u";
+    const said = d.savedAs ? 'Grouped &middot; <b>' + esc(d.savedAs) + '</b>' + (isSnap ? ' &middot; snapped' : '')
                : k === all ? 'Grouped'
-               : sn >= 2 ? 'Snap group' + (sn < all ? ' (' + sn + ' of ' + all + ')' : '') + ' &middot; ' + (S.settings.keepSnaps ? 'keeping it' : 'not kept')
+               : isSnap ? 'Snap group &middot; ' + (S.settings.keepSnaps ? 'keeping it' : 'not kept')
                : k > 0 ? k + ' of ' + all + ' grouped' : 'Not grouped - just placed';
-    return '<div class="row' + (sel ? " sel" : "") + '" data-mon="' + d.mon + '">' +
+    if (isSnap) nth[d.mon] = (nth[d.mon] || 0) + 1;
+    const tag = per[d.mon] > 1 ? '<i>' + (isSnap ? 'snap ' + nth[d.mon] : 'placed') + '</i>' : '';
+    return '<div class="row' + (sel ? " sel" : "") + '" data-key="' + d.key + '">' +
       '<div class="state ' + st + '">' + (st === "u" ? ICON_LOOSE : ICON_GROUPED) + '</div>' +
-      '<div style="min-width:0"><div class="name">' + esc(d.monName) + '</div>' +
+      '<div style="min-width:0"><div class="name">' + esc(d.monName) + tag + '</div>' +
       '<div class="meta">' + plural(all, "window") + ' &middot; ' + (d.tiled ? "tiled" : "loose") +
-      (d.behind ? ' &middot; +' + d.behind + ' behind' : '') + '</div>' +
+      (d.hidden ? ' &middot; behind others' : '') + (d.behind ? ' &middot; +' + d.behind + ' behind' : '') + '</div>' +
       '<div class="meta" style="color:' + (st === "g" || st === "s" ? "var(--paper)" : st === "p" ? "var(--amber)" : "var(--mute-2)") + '">' + said + '</div></div>' +
       '<div class="dot' + (st === "g" ? " all" : st === "s" ? " snap" : st === "p" ? " some" : "") + '"></div></div>';
   }).join(""));
@@ -510,12 +564,12 @@ function groupLayers(g, active, dimOthers) {
       if (w && (scope === "all" || w.claude)) rects.push({ mon: w.mon, l: g.X(w.vx) - pad, t: g.Y(w.vy) - pad, r: g.X(w.vx + w.vw) + pad, b: g.Y(w.vy + w.vh) + pad });
     }
     if (rects.length < 2) continue;
-    const on = view.kind === "detected" && view.mon === d.mon;
+    const on = view.kind === "detected" && view.key === d.key;
     const cls = "snapl" + (on ? " on" : "") + (dimOthers ? " dim" : "");
     const u = unionOutline(rects);
     paths += '<g class="' + cls + '"><path class="lf" d="' + u.fill + '"/><path class="le" d="' + u.edges + '"/></g>';
     const r = rects.slice().sort((a, b) => (a.t - b.t) || (a.l - b.l))[0];
-    labels += '<span class="gl snap' + (on ? " on" : "") + (dimOthers ? " dim" : "") + '" data-dsel="' + d.mon + '" title="A snap group made in Windows" style="left:' + (r.l + 10).toFixed(1) + 'px;top:' + r.t.toFixed(1) + 'px">' +
+    labels += '<span class="gl snap' + (on ? " on" : "") + (dimOthers ? " dim" : "") + '" data-dsel="' + d.key + '" title="A snap group made in Windows" style="left:' + (r.l + 10).toFixed(1) + 'px;top:' + r.t.toFixed(1) + 'px">' +
               ICON_GROUPED + 'Snap group <i>' + esc(d.monName) + (S.settings.keepSnaps ? ' &middot; keeping' : '') + '</i></span>';
   }
   return { html: paths ? '<svg class="layers">' + paths + '</svg>' : "", labels };
@@ -566,8 +620,10 @@ function geometry() {
 
 function tileHtml(cls, g, x, y, w, h, title, sub, attrs, n, mark) {
   const W = Math.max(14, w * g.s), H = Math.max(14, h * g.s);
-  const small = W < 90 || H < 46;
-  return '<div class="tile ' + cls + '" ' + (attrs || "") + ' style="left:' + g.X(x).toFixed(1) + 'px;top:' + g.Y(y).toFixed(1) +
+  // Names stay on narrow tiles - in smaller type. The first version hid them under 90px, and a
+  // tall portrait screen shrinks the map so much that a column of thirds lost every name.
+  const small = W < 46 || H < 28, narrow = !small && W < 118;
+  return '<div class="tile ' + cls + (narrow ? " narrow" : "") + '" ' + (attrs || "") + ' title="' + esc(title) + '" style="left:' + g.X(x).toFixed(1) + 'px;top:' + g.Y(y).toFixed(1) +
     'px;width:' + W.toFixed(1) + 'px;height:' + H.toFixed(1) + 'px">' +
     (mark && W >= 26 ? '<span class="gi ' + mark + '" title="' + (mark === "g" ? "In a saved group" : "Not in any group") + '">' + (mark === "g" ? ICON_GROUPED : ICON_LOOSE) + '</span>' : '') +
     (n ? '<span class="n">' + n + '</span>' : '') +
@@ -586,7 +642,7 @@ function renderStage() {
   const g = geometry();
   let html = "", labels = "";
   let focusMons = null;
-  if (view.kind === "detected") focusMons = new Set([view.mon]);
+  if (view.kind === "detected" && curDetected()) focusMons = new Set([curDetected().mon]);
   if (view.kind === "group") { const gr = S.groups.find(x => x.id === view.id); if (gr) focusMons = new Set(gr.slots.map(s => s.mon)); }
 
   for (const m of S.monitors) {
@@ -604,7 +660,7 @@ function renderStage() {
   const active = new Set();
   if (view.kind === "group") active.add(view.id);
   if (view.kind === "detected") {
-    const d = detectedInScope().find(x => x.mon === view.mon);
+    const d = curDetected();
     const gr = d && d.savedAs && S.groups.find(x => x.name === d.savedAs);
     if (gr) active.add(gr.id);
   }
@@ -621,11 +677,22 @@ function renderStage() {
                        'data-pick="' + w.h + '"', null, gs || sd ? "g" : "u");
     }
   } else if (view.kind === "detected") {
-    const d = detectedInScope().find(x => x.mon === view.mon);
-    const set = new Set(d ? d.handles : []);
-    for (const w of wins) {
+    // Ticked windows are drawn last, so a layout sitting BEHIND others is shown in front while you
+    // look at it. Every window on that screen can be clicked in or out - hidden ones included.
+    const d = curDetected();
+    const sel = dpick || new Set(d ? d.handles : []);
+    const mon = d ? d.mon : -1;
+    // Draw order: everything else, then this layout's windows that were taken out (dashed, still
+    // clickable - they must not vanish under whatever sits in front of them), then the ticked ones.
+    const own = new Set(d ? d.handles : []);
+    const order = wins.filter(w => !sel.has(w.h) && !own.has(w.h))
+      .concat(wins.filter(w => !sel.has(w.h) && own.has(w.h)))
+      .concat(wins.filter(w => sel.has(w.h)));
+    for (const w of order) {
       const gs = mem.get(w.h), sd = !gs && snaps.get(w.h);
-      if (set.has(w.h)) html += tileHtml("on" + (gs || sd ? "" : " loose") + (sd ? " snapm" : ""), g, w.vx, w.vy, w.vw, w.vh, w.title, gs ? names(w.h) : sd ? "snap group" : "not grouped", "", null, gs || sd ? "g" : "u");
+      if (sel.has(w.h)) html += tileHtml("on pick" + (sd ? " snapm" : ""), g, w.vx, w.vy, w.vw, w.vh, w.title,
+                                         (gs ? names(w.h) : sd ? "snap group" : "not grouped") + " &middot; click to drop", 'data-dpick="' + w.h + '"', null, gs || sd ? "g" : "u");
+      else if (w.mon === mon) html += tileHtml("off", g, w.vx, w.vy, w.vw, w.vh, w.title, "click to add", 'data-dpick="' + w.h + '"', null, gs || sd ? "g" : "u");
       else html += tileHtml("ghost", g, w.vx, w.vy, w.vw, w.vh, w.title, "", "", null, gs || sd ? "g" : "u");
     }
   } else if (view.kind === "group") {
@@ -663,30 +730,37 @@ function renderDetail() {
         '<button class="btn" id="showPicked"' + (n ? "" : " disabled") + '>Show on screen</button>' +
         (n ? '<button class="btn ghost" id="clearPicked">Clear</button>' : '') +
       '</div></div>' +
-      '<p class="hint" style="margin-top:16px">Click windows on the map to pick them - across any screens. Or save a whole screen from <b>On screen now</b>: every screen with two or more windows on it shows up there by itself.</p>');
+      '<p class="hint" style="margin-top:16px">Click windows on the map to pick them - across any screens. Or start from <b>On screen now</b>: every layout on every screen is listed there by itself - each snap group, and windows just placed side by side - several per screen if that is how they are.</p>');
     return;
   }
 
   if (view.kind === "detected") {
-    const d = detectedInScope().find(x => x.mon === view.mon);
+    const d = curDetected();
     if (!d) { view = { kind: "live" }; return renderDetail(); }
-    $("#viewLabel").textContent = "On screen now - " + d.monName;
+    if (!dpick) dpick = new Set(d.handles);
+    const sel = [...dpick].filter(h => winByH(h));
+    const changed = sel.length !== d.handles.length || d.handles.some(h => !dpick.has(h));
+    const suggested = d.savedAs && !changed ? d.savedAs : freeName(d.monName);
+    $("#viewLabel").textContent = "On screen now - " + d.monName + (d.kind === "snap" ? " - snap group" : " - placed");
     setHTML(el,
-      '<div class="dhead"><div><div class="dtitle"><input id="newName" value="' + esc(d.savedAs || d.monName) + '" autocomplete="off"></div>' +
-      '<div class="dmeta meta">' + plural(d.handles.length, "window") + ' &middot; ' + (d.tiled ? "tiled" : "loose") + ' &middot; ' + Math.round(d.coverage * 100) + '% of the screen' +
-      (d.behind ? ' &middot; ' + d.behind + ' hidden behind, left out' : '') +
+      '<div class="dhead"><div><div class="dtitle"><input id="newName" value="' + esc(suggested) + '" autocomplete="off"></div>' +
+      '<div class="dmeta meta"><b>' + sel.length + '</b> of ' + plural(d.handles.length, "window") + ' ticked &middot; ' + (d.tiled ? "tiled" : "loose") +
+      (d.hidden ? ' &middot; behind other windows' : '') + (d.behind ? ' &middot; ' + d.behind + ' hidden behind' : '') +
       (d.savedAs ? ' &middot; already saved as <b>' + esc(d.savedAs) + '</b>' : '') + '</div></div>' +
-      '<div class="actions"><button class="btn primary" id="saveDetected">' + (d.savedAs ? "Save again" : "Save as group") + '</button>' +
-      '<button class="btn" id="showDetected">Show on screen</button></div></div>' +
-      ((d.snap || []).length >= 2 && !d.savedAs
-        ? '<p class="hint" style="margin-top:14px"><b>Windows made this a snap group.</b> Windows forgets snap groups every time it restarts. ' +
-          (S.settings.keepSnaps ? 'Window Groups keeps it for you once it has held still for twenty seconds - it will appear under Saved groups as <b>' + esc(d.monName) + '</b>.'
-                                : 'Save it here and it comes back after a restart.') + '</p>'
-        : '') +
-      '<div class="slots">' + d.handles.map((h, i) => {
+      '<div class="actions"><button class="btn primary" id="saveDetected"' + (sel.length ? '' : ' disabled') + '>Save ' + plural(sel.length, "window") + ' as group</button>' +
+      '<button class="btn" id="showDetected"' + (sel.length ? '' : ' disabled') + '>Show on screen</button>' +
+      (changed ? '<button class="btn ghost" id="resetPick">Reset</button>' : '') + '</div></div>' +
+      '<p class="hint" style="margin-top:14px">Click a window on the map to take it out of this group or put it in - windows hidden behind count too. ' +
+      (d.kind === "snap" && !d.savedAs
+        ? '<b>Windows made this a snap group.</b> Windows forgets snap groups every time it restarts; ' +
+          (S.settings.keepSnaps ? 'Window Groups keeps it for you once it has held still for twenty seconds, as <b>' + esc(freeName(d.monName)) + '</b>.' : 'save it here and it comes back after a restart.')
+        : '') + '</p>' +
+      '<div class="slots">' + sel.map((h, i) => {
         const w = winByH(h) || {};
         return '<div class="slot"><span class="ix">' + String(i + 1).padStart(2, "0") + '</span><span class="name">' + esc(w.title) + '</span>' +
-          '<span class="meta">' + esc(monName(w.mon)) + '</span><span class="meta">' + w.w + ' &times; ' + w.h2 + '</span><span class="st ok">open</span><span></span></div>';
+          '<span class="meta">' + esc(monName(w.mon)) + '</span><span class="meta">' + w.w + ' &times; ' + w.h2 + '</span>' +
+          '<span class="st ok">' + (w.snapped ? 'snapped' : 'placed') + '</span>' +
+          '<button class="x" title="Take it out" data-undpick="' + h + '">&times;</button></div>';
       }).join("") + '</div>');
     return;
   }
@@ -736,7 +810,10 @@ $("#groups").addEventListener("click", e => {
     renderGroups(); return;
   }
   const r = e.target.closest("[data-id]");
-  if (r) { view = { kind: "group", id: r.getAttribute("data-id") }; closePop(); render(); }
+  if (!r) return;
+  const id = r.getAttribute("data-id");
+  if (view.kind === "group" && view.id === id) { backToAll(); return; }     // click again: deselect
+  view = { kind: "group", id }; dpick = null; closePop(); render();
 });
 $("#groups").addEventListener("dblclick", e => {
   const r = e.target.closest("[data-id]");
@@ -750,18 +827,22 @@ $("#groups").addEventListener("mouseover", e => {
 $("#groups").addEventListener("mouseleave", () => { if (hoverGroup) { hoverGroup = null; renderStage(); } });
 
 $("#detected").addEventListener("click", e => {
-  const r = e.target.closest("[data-mon]");
-  if (r) { view = { kind: "detected", mon: +r.getAttribute("data-mon") }; closePop(); render(); }
+  const r = e.target.closest("[data-key]");
+  if (!r) return;
+  const key = r.getAttribute("data-key");
+  if (view.kind === "detected" && view.key === key) { backToAll(); return; }   // click again: deselect
+  openDetected(key);
 });
 $("#deploySel").addEventListener("click", () => run("deploy", { ids: [...ticked] }));
 
 $("#scope").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
   scope = b.dataset.s; scopeTouched = true; localStorage.setItem("wg.scope", scope);
-  if (view.kind === "detected") view = { kind: "live" };
+  if (view.kind === "detected") { view = { kind: "live" }; dpick = null; }
   render();
 });
 
+$("#backAll").addEventListener("click", backToAll);
 $("#swAuto").addEventListener("click", () => run("setting", { key: "autoRestore", value: !S.settings.autoRestore }));
 $("#swStart").addEventListener("click", () => run("setting", { key: "startWithWindows", value: !S.settings.startWithWindows }));
 $("#swSnap").addEventListener("click", () => run("setting", { key: "keepSnaps", value: !S.settings.keepSnaps }));
@@ -770,7 +851,9 @@ $("#canvas").addEventListener("click", e => {
   const gl = e.target.closest("[data-gsel]");
   if (gl) { view = { kind: "group", id: gl.getAttribute("data-gsel") }; closePop(); render(); return; }
   const dl = e.target.closest("[data-dsel]");
-  if (dl) { view = { kind: "detected", mon: +dl.getAttribute("data-dsel") }; closePop(); render(); return; }
+  if (dl) { openDetected(dl.getAttribute("data-dsel")); return; }
+  const dp = e.target.closest("[data-dpick]");
+  if (dp && dpick) { const h = dp.getAttribute("data-dpick"); dpick.has(h) ? dpick.delete(h) : dpick.add(h); render(); return; }
   const p = e.target.closest("[data-pick]");
   if (p) { const h = p.getAttribute("data-pick"); picked.has(h) ? picked.delete(h) : picked.add(h); render(); return; }
   const m = e.target.closest("[data-miss]");
@@ -809,19 +892,27 @@ $("#detail").addEventListener("click", async e => {
   if (id === "savePicked" || id === "saveDetected") {
     const name = ($("#newName") && $("#newName").value.trim()) || "";
     if (!name) { toast("Give the group a name first.", true); if ($("#newName")) $("#newName").focus(); return; }
-    const handles = id === "savePicked" ? [...picked] : (detectedInScope().find(x => x.mon === view.mon) || { handles: [] }).handles;
+    const handles = id === "savePicked" ? [...picked] : [...(dpick || [])];
+    const saved = j => { toast(j.message); picked.clear(); dpick = null; view = { kind: "group", id: j.id }; };
     try {
-      const j = await act("save", { name, handles });
-      toast(j.message); picked.clear(); view = { kind: "group", id: j.id }; await load();
+      saved(await act("save", { name, handles })); await load();
     } catch (err) {
-      if (err.status === 409 && await confirmBox("Replace " + name + "?", err.message + " Saving replaces its windows and positions with these.", "Replace")) {
-        const j = await run("save", { name, handles, replace: true }); view = { kind: "group", id: j.id }; picked.clear(); render();
-      } else if (err.status !== 409) toast(err.message, true);
+      if (err.status !== 409) { toast(err.message, true); return; }
+      const other = freeName(name);
+      const pick = await choiceBox(name + " already exists",
+        "Save these as a new group next to it, or replace what " + name + " holds with these windows?",
+        [{ label: "Replace " + name, value: "replace", cls: "danger" }, { label: "Save as " + other, value: "new", cls: "primary" }]);
+      if (pick === "new") saved(await run("save", { name: other, handles }));
+      if (pick === "replace") saved(await run("save", { name, handles, replace: true }));
+      render();
     }
   }
+  if (id === "resetPick") { const d = curDetected(); dpick = d ? new Set(d.handles) : null; render(); }
+  const und = e.target.closest("[data-undpick]");
+  if (und && dpick) { dpick.delete(und.getAttribute("data-undpick")); render(); }
   if (id === "showDetected") {
-    const d = detectedInScope().find(x => x.mon === view.mon);
-    if (d) run("overlayHandles", { handles: d.handles, label: d.monName });
+    const d = curDetected();
+    if (d && dpick) run("overlayHandles", { handles: [...dpick], label: d.monName });
   }
   if (!gr) return;
   if (id === "deployOne") run("deploy", { ids: [gr.id] });
@@ -861,7 +952,7 @@ window.addEventListener("resize", () => { if (S) renderStage(); });
 // #g=<group id> or #screen=<n> opens straight on that group or screen
 (function () {
   const m = location.hash.match(/^#(g|screen)=(.+)$/);
-  if (m) view = m[1] === "g" ? { kind: "group", id: decodeURIComponent(m[2]) } : { kind: "detected", mon: +m[2] };
+  if (m) view = m[1] === "g" ? { kind: "group", id: decodeURIComponent(m[2]) } : { kind: "detected", key: decodeURIComponent(m[2]).includes("-") ? decodeURIComponent(m[2]) : m[2] + "-0" };
 })();
 load();
 </script>
