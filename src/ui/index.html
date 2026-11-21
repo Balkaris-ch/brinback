@@ -638,7 +638,7 @@ function renderStage() {
         const n = String(s.i + 1).padStart(2, "0");
         // a slot's rect includes the invisible 7px resize border; draw the visible part
         const x = s.x + 7, y = s.y, w = s.w - 14, h = s.h2 - 7;
-        if (s.open) html += tileHtml("on", g, x, y, w, h, s.title, "open", 'data-slot="' + s.i + '"', n, "g");
+        if (s.open) html += tileHtml("on", g, x, y, w, h, s.title, s.zone ? "open &middot; snaps" : "open &middot; placed", 'data-slot="' + s.i + '"', n, "g");
         else html += tileHtml("missing", g, x, y, w, h, s.title, "not open &middot; replace", 'data-miss="' + s.i + '"', n);
       }
     }
@@ -680,7 +680,7 @@ function renderDetail() {
       '<button class="btn" id="showDetected">Show on screen</button></div></div>' +
       ((d.snap || []).length >= 2 && !d.savedAs
         ? '<p class="hint" style="margin-top:14px"><b>Windows made this a snap group.</b> Windows forgets snap groups every time it restarts. ' +
-          (S.settings.keepSnaps ? 'Window Groups keeps it for you once it has held still for a few seconds - it will appear under Saved groups as <b>' + esc(d.monName) + '</b>.'
+          (S.settings.keepSnaps ? 'Window Groups keeps it for you once it has held still for twenty seconds - it will appear under Saved groups as <b>' + esc(d.monName) + '</b>.'
                                 : 'Save it here and it comes back after a restart.') + '</p>'
         : '') +
       '<div class="slots">' + d.handles.map((h, i) => {
@@ -700,7 +700,8 @@ function renderDetail() {
   setHTML(el,
     '<div class="dhead"><div><div class="dtitle"><input id="renameIn" value="' + esc(gr.name) + '" autocomplete="off"></div>' +
     '<div class="dmeta meta"><b>' + gr.open + '</b>/' + gr.slots.length + ' open' + (missing ? ' &middot; <span style="color:var(--amber)">' + missing + ' not open</span>' : '') +
-    ' &middot; saved ' + esc(gr.saved || "") + '</div></div>' +
+    ' &middot; saved ' + esc(gr.saved || "") +
+    ' &middot; ' + gr.slots.filter(s => s.zone).length + ' snap in Windows' + (gr.slots.some(s => !s.zone) ? ', ' + gr.slots.filter(s => !s.zone).length + ' placed exactly' : '') + '</div></div>' +
     '<div class="actions">' +
       '<button class="btn primary" id="deployOne">Deploy</button>' +
       '<button class="btn" id="showGroup">Show on screen</button>' +
@@ -716,11 +717,12 @@ function renderDetail() {
         '<span class="name" style="' + (s.open ? "" : "color:var(--mute)") + '">' + esc(s.title) + '</span>' +
         '<span class="meta">' + esc(monName(s.mon)) + '</span>' +
         '<span class="meta">' + s.w + ' &times; ' + s.h2 + (s.max ? " max" : "") + '</span>' +
-        (s.open ? '<span class="st ok">open</span>'
+        (s.open ? '<span class="st ok">open &middot; ' + (s.zone ? 'snaps' : 'placed') + '</span>'
                 : '<select class="dark" data-replace="' + s.i + '">' + opts + '</select>') +
         '<button class="x" title="Remove from group" data-remove="' + s.i + '">&times;</button>' +
       '</div>';
     }).join("") + '</div>' +
+    (gr.slots.some(s => !s.zone) ? '<p class="hint" style="margin-top:14px"><b>Snaps</b> means Deploy snaps it with Windows itself - square corners, shared edges, a real snap group. Windows only has shortcuts for halves and quarters of a screen, so a window in any other shape (thirds, a custom size) is <b>placed</b> exactly instead.</p>' : '') +
     (missing ? '<p class="hint" style="margin-top:14px">A dashed slot is a window that is not open. Click it on the map, or use <b>Replace with</b>, to put another open window in that place.</p>' : ''));
 }
 

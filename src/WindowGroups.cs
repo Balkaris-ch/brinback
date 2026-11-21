@@ -38,8 +38,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Save window layouts. Bring them back.")]
 [assembly: AssemblyProduct("Window Groups")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 
 namespace WindowGroups
 {
@@ -79,6 +79,20 @@ namespace WindowGroups
         [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT val, int size);
         [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
         [DllImport("user32.dll", EntryPoint = "IsWindowArranged")] static extern bool IsWindowArrangedRaw(IntPtr h);
+        [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+        [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+        [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+        [DllImport("kernel32.dll")] public static extern uint GetTickCount();
+
+        [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr dwExtraInfo; }
+        [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr dwExtraInfo; }
+        [StructLayout(LayoutKind.Explicit)] public struct InputUnion { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
+        [StructLayout(LayoutKind.Sequential)] public struct INPUT { public uint type; public InputUnion u; }
+        [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT[] inputs, int size);
+        [StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize, dwTime; }
+        [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO li);
 
         // Is this window snapped? The one documented signal Windows gives about Snap Layouts.
         // Snap GROUPS themselves - which snapped windows belong together - are not exposed at all.
@@ -110,6 +124,7 @@ namespace WindowGroups
     class Mon
     {
         public int Index; public int X, Y, W, H; public bool Primary; public string Name;
+        public int WX, WY, WW, WH;      // work area: the screen minus the taskbar - what Snap divides
     }
 
     static class Desk
@@ -129,6 +144,7 @@ namespace WindowGroups
                 m.X = mi.rcMonitor.L; m.Y = mi.rcMonitor.T;
                 m.W = mi.rcMonitor.R - mi.rcMonitor.L; m.H = mi.rcMonitor.B - mi.rcMonitor.T;
                 m.Primary = (mi.dwFlags & 1) != 0;
+                m.WX = mi.rcWork.L; m.WY = mi.rcWork.T; m.WW = mi.rcWork.R - mi.rcWork.L; m.WH = mi.rcWork.B - mi.rcWork.T;
                 list.Add(m);
                 return true;
             }, IntPtr.Zero);
@@ -293,6 +309,156 @@ namespace WindowGroups
             if (N.IsIconic(hw)) N.ShowWindow(hw, N.SW_RESTORE);
             N.SetWindowPos(hw, N.TOPMOST, 0, 0, 0, 0, N.SWP_NOSIZE | N.SWP_NOMOVE | N.SWP_NOACTIVATE);
             N.SetWindowPos(hw, N.NOTOPMOST, 0, 0, 0, 0, N.SWP_NOSIZE | N.SWP_NOMOVE | N.SWP_NOACTIVATE);
+        }
+    }
+
+    // ============================================================ real Windows snapping
+
+    enum Zone { None, Left, Right, TopLeft, TopRight, BottomLeft, BottomRight }
+
+    // Windows has no function an app can call to snap a window. Placing it at the right
+    // coordinates is not the same thing: it keeps rounded corners and a seam, Windows does not
+    // count it as snapped, and it never becomes a snap group - which is exactly what a user sees
+    // and objects to. The only way in is the shortcut a person would use: Win+Left/Right for a
+    // half, then Win+Up/Down for a quarter. So that is what this does, with every safeguard:
+    //
+    //  - a snapped window stays "snapped" when moved by code, and Win+Left on a window already
+    //    snapped left throws it onto the next screen - so it is restored (unsnapped) first;
+    //  - it is moved onto the right screen before any key, because snapping acts on the screen
+    //    the window is on;
+    //  - no key is sent unless that exact window is in front at that moment, so a snap key can
+    //    never land on a window that is not being moved;
+    //  - the result is checked with Windows, and anything that did not take falls back to exact
+    //    placement.
+    //
+    // Halves and quarters only. Thirds and the other Snap Layouts shapes have no shortcut; those
+    // windows are placed exactly instead, and the interface says which is which.
+    static class Snapper
+    {
+        public static volatile bool Busy;                 // auto-restore and snap keeping hold off while set
+        static readonly object gate = new object();
+        const ushort VK_LWIN = 0x5B, VK_LEFT = 0x25, VK_UP = 0x26, VK_RIGHT = 0x27, VK_DOWN = 0x28, VK_ESC = 0x1B, VK_ALT = 0x12;
+
+        public static Zone ZoneOf(int x, int y, int w, int h, Mon m)
+        {
+            if (m == null || m.WW <= 0 || m.WH <= 0) return Zone.None;
+            double wr = w / (double)m.WW, hr = h / (double)m.WH;
+            double cx = (x + w / 2.0 - m.WX) / m.WW, cy = (y + h / 2.0 - m.WY) / m.WH;
+            if (wr < 0.44 || wr > 0.57) return Zone.None;
+            if (hr > 0.93 && hr < 1.05) return cx < 0.5 ? Zone.Left : Zone.Right;
+            if (hr > 0.44 && hr < 0.57)
+                return cy < 0.5 ? (cx < 0.5 ? Zone.TopLeft : Zone.TopRight) : (cx < 0.5 ? Zone.BottomLeft : Zone.BottomRight);
+            return Zone.None;
+        }
+
+        public static Mon MonOf(Slot s, List<Mon> mons)
+        {
+            int i = Desk.MonitorOf(s.X + 7, s.Y, Math.Max(1, s.W - 14), Math.Max(1, s.H - 7), mons);
+            return mons.FirstOrDefault(m => m.Index == i);
+        }
+
+        public static Zone ZoneOf(Slot s, List<Mon> mons) { return s.Max ? Zone.None : ZoneOf(s.X, s.Y, s.W, s.H, MonOf(s, mons)); }
+
+        // Already snapped in exactly that zone on that screen? Then leave it alone.
+        public static bool IsSnappedAt(long handle, Mon m, Zone z)
+        {
+            var hw = new IntPtr(handle);
+            if (!N.IsArranged(hw)) return false;
+            N.RECT r; N.GetWindowRect(hw, out r);
+            return ZoneOf(r.L, r.T, r.R - r.L, r.B - r.T, m) == z &&
+                   Desk.MonitorOf(r.L + 7, r.T, r.R - r.L - 14, r.B - r.T - 7, new List<Mon> { m }) == m.Index;
+        }
+
+        public static bool Snap(long handle, Slot s, Mon m, Zone z)
+        {
+            lock (gate)
+            {
+                var hw = new IntPtr(handle);
+                if (!N.IsWindow(hw) || z == Zone.None || m == null) return false;
+                if (IsSnappedAt(handle, m, z)) return true;
+                CloseSnapAssist();
+                if (N.IsArranged(hw) || N.IsZoomed(hw) || N.IsIconic(hw)) { N.ShowWindow(hw, N.SW_RESTORE); Thread.Sleep(350); }
+                Desk.Place(handle, s.X, s.Y, s.W, s.H, false);
+                Thread.Sleep(150);
+                bool left = z == Zone.Left || z == Zone.TopLeft || z == Zone.BottomLeft;
+                if (!Key(hw, left ? VK_LEFT : VK_RIGHT)) return false;
+                if (z == Zone.TopLeft || z == Zone.TopRight) { if (!Key(hw, VK_UP)) return false; }
+                else if (z == Zone.BottomLeft || z == Zone.BottomRight) { if (!Key(hw, VK_DOWN)) return false; }
+                return IsSnappedAt(handle, m, z);
+            }
+        }
+
+        static bool Key(IntPtr hw, ushort vk)
+        {
+            if (!Front(hw)) return false;
+            Thread.Sleep(250);
+            if (N.GetForegroundWindow() != hw) return false;     // never a snap key into a window we are not moving
+            Combo(VK_LWIN, vk, true);
+            Thread.Sleep(550);
+            return true;
+        }
+
+        // Windows only lets the program the user is working in change the foreground window. A
+        // tapped Alt, plus briefly sharing input with the current foreground thread, is the
+        // well-worn way to be allowed to - and it is checked, never assumed.
+        static bool Front(IntPtr h)
+        {
+            if (N.GetForegroundWindow() == h) return true;
+            uint fg = N.GetWindowThreadProcessId(N.GetForegroundWindow(), IntPtr.Zero), me = N.GetCurrentThreadId();
+            Tap(VK_ALT);
+            bool attached = fg != 0 && fg != me && N.AttachThreadInput(me, fg, true);
+            N.BringWindowToTop(h);
+            N.SetForegroundWindow(h);
+            if (attached) N.AttachThreadInput(me, fg, false);
+            return N.GetForegroundWindow() == h;
+        }
+
+        static N.INPUT KeyIn(ushort vk, bool up, bool ext)
+        {
+            var i = new N.INPUT { type = 1 };
+            i.u.ki.wVk = vk;
+            i.u.ki.dwFlags = (up ? 2u : 0u) | (ext ? 1u : 0u);
+            return i;
+        }
+
+        static void Combo(ushort mod, ushort key, bool ext)
+        {
+            var seq = new[] { KeyIn(mod, false, false), KeyIn(key, false, ext), KeyIn(key, true, ext), KeyIn(mod, true, false) };
+            N.SendInput((uint)seq.Length, seq, Marshal.SizeOf(typeof(N.INPUT)));
+        }
+
+        static void Tap(ushort vk)
+        {
+            var seq = new[] { KeyIn(vk, false, false), KeyIn(vk, true, false) };
+            N.SendInput((uint)seq.Length, seq, Marshal.SizeOf(typeof(N.INPUT)));
+        }
+
+        // Snap Assist - the "pick a window for the rest of the screen" overlay - opens after a snap
+        // that leaves space. Escape closes it, but only once it is the window in front, so Escape
+        // can never reach an app (in Claude it would stop whatever the session is doing).
+        public static void CloseSnapAssist()
+        {
+            IntPtr sa = IntPtr.Zero;
+            N.EnumWindows(delegate (IntPtr h, IntPtr l)
+            {
+                if (!N.IsWindowVisible(h)) return true;
+                var c = new StringBuilder(128); N.GetClassName(h, c, c.Capacity);
+                if (c.ToString() != "XamlExplorerHostIslandWindow") return true;
+                var t = new StringBuilder(128); N.GetWindowText(h, t, t.Capacity);
+                if (t.ToString() == "Snap Assist") { sa = h; return false; }
+                return true;
+            }, IntPtr.Zero);
+            if (sa == IntPtr.Zero) return;
+            if (!Front(sa)) return;
+            Thread.Sleep(120);
+            if (N.GetForegroundWindow() == sa) { Tap(VK_ESC); Thread.Sleep(250); }
+        }
+
+        public static double IdleSeconds()
+        {
+            var li = new N.LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf(typeof(N.LASTINPUTINFO)) };
+            if (!N.GetLastInputInfo(ref li)) return 0;
+            return unchecked(N.GetTickCount() - li.dwTime) / 1000.0;
         }
     }
 
@@ -532,23 +698,48 @@ namespace WindowGroups
             return slots;
         }
 
-        public class DeployResult { public string Group; public int Placed; public int Total; public List<string> Missing = new List<string>(); }
+        public class DeployResult { public string Group; public int Placed; public int Snapped; public int Total; public List<string> Missing = new List<string>(); }
 
-        public static DeployResult Deploy(Group g)
+        static readonly object deployGate = new object();
+
+        public static DeployResult Deploy(Group g) { return Deploy(g, false); }
+
+        // snapOnly: leave placement alone, only snap what should be snapped and is not (used by
+        // auto-restore once a group's windows have all reappeared).
+        public static DeployResult Deploy(Group g, bool snapOnly)
         {
-            var mons = Desk.Monitors();
-            var open = Desk.List(mons);
-            var states = Resolve(g, open, Claude.Titles(), mons);
-            var r = new DeployResult { Group = g.Name, Total = states.Count };
-            // Lowest in the saved stack first, so raising them one by one leaves the top one on top.
-            var live = states.Where(s => s.Window != null).OrderByDescending(s => s.Slot.Z).ToList();
-            foreach (var s in live)
-                if (Desk.Place(s.Window.Handle, s.Slot.X, s.Slot.Y, s.Slot.W, s.Slot.H, s.Slot.Max)) r.Placed++;
-            foreach (var s in live) Desk.Raise(s.Window.Handle);
-            foreach (var s in states.Where(s => s.Window == null)) r.Missing.Add(s.Title);
-            Log.Write("deploy '" + g.Name + "': " + r.Placed + " of " + r.Total + " placed" +
-                      (r.Missing.Count > 0 ? ", not open: " + string.Join(", ", r.Missing) : ""));
-            return r;
+            lock (deployGate)
+            {
+                Snapper.Busy = true;
+                try
+                {
+                    var mons = Desk.Monitors();
+                    var open = Desk.List(mons);
+                    var states = Resolve(g, open, Claude.Titles(), mons);
+                    var r = new DeployResult { Group = g.Name, Total = states.Count };
+                    // Lowest in the saved stack first, so raising them one by one leaves the top one on top.
+                    var live = states.Where(s => s.Window != null).OrderByDescending(s => s.Slot.Z).ToList();
+                    bool snappedAny = false;
+                    foreach (var s in live)
+                    {
+                        var zone = Snapper.ZoneOf(s.Slot, mons);
+                        if (zone != Zone.None)
+                        {
+                            if (Snapper.Snap(s.Window.Handle, s.Slot, Snapper.MonOf(s.Slot, mons), zone)) { r.Snapped++; r.Placed++; snappedAny = true; continue; }
+                            Log.Write("snap: '" + s.Window.Title + "' did not snap - placed instead");
+                        }
+                        if (snapOnly) continue;
+                        if (Desk.Place(s.Window.Handle, s.Slot.X, s.Slot.Y, s.Slot.W, s.Slot.H, s.Slot.Max)) r.Placed++;
+                    }
+                    if (snappedAny) Snapper.CloseSnapAssist();
+                    if (!snapOnly) foreach (var s in live) Desk.Raise(s.Window.Handle);
+                    foreach (var s in states.Where(s => s.Window == null)) r.Missing.Add(s.Title);
+                    Log.Write("deploy '" + g.Name + "'" + (snapOnly ? " (snap only)" : "") + ": " + r.Placed + " of " + r.Total + " placed, " + r.Snapped + " snapped" +
+                              (r.Missing.Count > 0 ? ", not open: " + string.Join(", ", r.Missing) : ""));
+                    return r;
+                }
+                finally { Snapper.Busy = false; }
+            }
         }
 
         public class Detected
@@ -646,6 +837,7 @@ namespace WindowGroups
 
         public void Tick(List<Win> open, List<Mon> mons)
         {
+            if (Snapper.Busy) return;
             lock (Store.Gate) if (!Store.D.KeepSnaps) { seen.Clear(); return; }
             var now = DateTime.Now;
             var live = new HashSet<int>();
@@ -657,7 +849,7 @@ namespace WindowGroups
                 string sig = Signature(slots) + "@" + string.Join(",", slots.OrderBy(x => x.X).ThenBy(x => x.Y).Select(x => x.X + ":" + x.Y + ":" + x.W + ":" + x.H));
                 KeyValuePair<string, DateTime> prev;
                 if (!seen.TryGetValue(d.Mon, out prev) || prev.Key != sig) { seen[d.Mon] = new KeyValuePair<string, DateTime>(sig, now); continue; }
-                if ((now - prev.Value).TotalSeconds < 6) continue;
+                if ((now - prev.Value).TotalSeconds < 20) continue;
                 Keep(d, slots, open, mons);
             }
             foreach (var m in seen.Keys.Where(k => !live.Contains(k)).ToList()) seen.Remove(m);
@@ -719,6 +911,9 @@ namespace WindowGroups
         int ticks;
         readonly HashSet<long> done = new HashSet<long>();
         readonly Dictionary<long, DateTime> pending = new Dictionary<long, DateTime>();
+        // Groups whose windows were just put back: snapped for real once nothing new has arrived
+        // for a few seconds and nobody is typing - snapping takes the keyboard for a moment.
+        readonly Dictionary<string, DateTime> toSnap = new Dictionary<string, DateTime>();
 
         public void Init()
         {
@@ -733,6 +928,7 @@ namespace WindowGroups
 
         public void Tick()
         {
+            if (Snapper.Busy) return;
             List<Mon> mons;
             List<Win> open;
             try { mons = Desk.Monitors(); open = Desk.List(mons); }
@@ -798,6 +994,16 @@ namespace WindowGroups
 
             // Every third tick: is there a snap group worth keeping?
             if (++ticks % 3 == 0) { try { keeper.Tick(open, mons); } catch (Exception e) { Log.Write("snap: " + e.Message); } }
+
+            foreach (var g in touched) toSnap[g.Id] = now;
+            if (toSnap.Count > 0 && Snapper.IdleSeconds() > 3)
+            {
+                var ready = toSnap.Where(kv => (now - kv.Value).TotalSeconds > 5).Select(kv => kv.Key).ToList();
+                foreach (var id in ready) toSnap.Remove(id);
+                var gs = groups.Where(x => ready.Contains(x.Id)).ToList();
+                if (gs.Count > 0)
+                    ThreadPool.QueueUserWorkItem(delegate { foreach (var x in gs) { try { Layouts.Deploy(x, true); } catch (Exception e) { Log.Write("auto snap: " + e.Message); } } });
+            }
 
             // Restore the stacking of every group that just received a window.
             foreach (var g in touched)
@@ -1176,7 +1382,8 @@ namespace WindowGroups
                             { "i", s.Index }, { "title", s.Title }, { "savedTitle", s.Slot.Title }, { "sessionId", s.Slot.SessionId },
                             { "process", s.Slot.Process },
                             { "x", s.Slot.X }, { "y", s.Slot.Y }, { "w", s.Slot.W }, { "h2", s.Slot.H }, { "max", s.Slot.Max }, { "z", s.Slot.Z },
-                            { "mon", s.Mon }, { "open", s.Window != null }, { "h", s.Window != null ? s.Window.Handle.ToString() : null } }).ToList() } });
+                            { "mon", s.Mon }, { "open", s.Window != null }, { "h", s.Window != null ? s.Window.Handle.ToString() : null },
+                            { "zone", Snapper.ZoneOf(s.Slot, mons) == Zone.None ? null : Snapper.ZoneOf(s.Slot, mons).ToString() } }).ToList() } });
                 }
                 res["settings"] = new Dictionary<string, object> { { "autoRestore", Store.D.AutoRestore }, { "startWithWindows", Startup.On }, { "keepSnaps", Store.D.KeepSnaps } };
             }
@@ -1195,7 +1402,7 @@ namespace WindowGroups
             res["detected"] = detected(true);
             res["detectedAll"] = detected(false);
             res["claudeFound"] = wins.Any(w => w.IsClaude) || titles.Count > 0;
-            res["version"] = "1.2.0";
+            res["version"] = "1.3.0";
             return res;
         }
 
@@ -1228,7 +1435,8 @@ namespace WindowGroups
                     foreach (var g in gs)
                     {
                         var r = Layouts.Deploy(g);
-                        parts.Add(r.Group + " " + r.Placed + "/" + r.Total + (r.Missing.Count > 0 ? " (not open: " + string.Join(", ", r.Missing.Select(UiFont.Plain)) + ")" : ""));
+                        parts.Add(r.Group + " " + r.Placed + "/" + r.Total + (r.Snapped > 0 ? ", " + r.Snapped + " snapped" : "") +
+                                  (r.Missing.Count > 0 ? " (not open: " + string.Join(", ", r.Missing.Select(UiFont.Plain)) + ")" : ""));
                     }
                     return Ok("Deployed " + string.Join(" - ", parts));
                 }
@@ -1495,9 +1703,13 @@ namespace WindowGroups
                     Group grp;
                     lock (Store.Gate) grp = Store.Find(id);
                     if (grp == null) return;
-                    var r = Layouts.Deploy(grp);
-                    icon.ShowBalloonTip(2500, UiFont.Plain(grp.Name), r.Placed + " of " + r.Total + " placed" +
-                        (r.Missing.Count > 0 ? " - not open: " + string.Join(", ", r.Missing.Select(UiFont.Plain)) : ""), ToolTipIcon.None);
+                    ThreadPool.QueueUserWorkItem(delegate
+                    {
+                        var r = Layouts.Deploy(grp);
+                        App.OnUi(() => icon.ShowBalloonTip(2500, UiFont.Plain(grp.Name), r.Placed + " of " + r.Total + " placed" +
+                            (r.Snapped > 0 ? ", " + r.Snapped + " snapped" : "") +
+                            (r.Missing.Count > 0 ? " - not open: " + string.Join(", ", r.Missing.Select(UiFont.Plain)) : ""), ToolTipIcon.None));
+                    });
                 };
                 menu.Items.Add(item);
             }

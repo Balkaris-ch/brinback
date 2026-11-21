@@ -22,7 +22,7 @@ other app's windows too.
   windows you snap with Snap Layouts, then forgets every one of those groups when it restarts.
   Window Groups sees which windows are snapped (`IsWindowArranged`, the one signal Windows
   gives), treats two or more snapped windows on a screen as the snap group they are, and once it
-  has held still for a few seconds keeps it as a group named after its screen - so it comes back
+  has held still for twenty seconds keeps it as a group named after its screen - so it comes back
   after a reboot. A kept snap group follows its layout as you resize it; rename or edit it and it
   becomes an ordinary group that is left alone; delete it and it is not kept again unless it
   changes. A group you saved yourself is never duplicated. Switch *Keep snap groups* off to only
@@ -33,8 +33,11 @@ other app's windows too.
   that merely sits between two members stays outside the layer. Hover or select a group and its
   layer lights up; *On screen now* says it in words: *Grouped*, *2 of 4 grouped*, *Not grouped*.
 - **Saves any set.** Or pick windows straight off the map, across as many screens as you like.
-- **Deploys.** Every window goes back to its saved place and size, and the saved top window
-  ends on top. Tick several groups and deploy them together, or pick one from the tray menu.
+- **Deploys - snapped by Windows itself.** Every window goes back to its saved place and size.
+  A window whose place is a half or a quarter of its screen is *snapped* there by Windows, not
+  just moved: square corners, shared edges, a real snap group - the same as if you had dragged
+  it to the edge yourself. Tick several groups and deploy them together, or pick one from the
+  tray menu.
 - **Auto-restore.** When a window that belongs to a group opens - after a reboot, or when you
   reopen the app - it is put in its slot. It happens once, when the window appears; moving it
   afterwards is never fought.
@@ -81,6 +84,25 @@ dependencies.
   puts a newly opened window into its saved place.
 
 ## How it works
+
+- **Snapping, not just moving.** Windows has no function an app can call to snap a window, and a
+  window moved to the right coordinates is not the same thing: it keeps rounded corners and a
+  visible seam, and Windows does not treat it as snapped. So Window Groups snaps the way a person
+  does - Win+Left/Right for a half, then Win+Up/Down for a quarter - with safeguards:
+  - a snapped window stays "snapped" even after it is moved by code, and Win+Left on a window
+    already snapped left throws it onto the next screen, so every window is unsnapped first;
+  - it is moved onto the right screen before any key, because snapping acts on the screen the
+    window is on;
+  - no key is sent unless that exact window is in front at that moment, so a snap key can never
+    land on another window;
+  - the result is checked with Windows; anything that did not snap is placed exactly instead;
+  - Snap Assist is closed afterwards with Escape, but only when it is the window in front, so
+    Escape never reaches an app.
+
+  Snapping takes the keyboard for about two seconds a window. Deploy does it when you click;
+  auto-restore waits until you have not touched the keyboard or mouse for three seconds.
+  Windows only has shortcuts for halves and quarters - thirds and other Snap Layouts shapes are
+  placed exactly, and the interface says which windows *snap* and which are *placed*.
 
 - **Physical pixels throughout.** The process is per-monitor DPI aware, so a window on a 125%
   screen is saved and restored in the same coordinates. Without this, mixed-scale setups
