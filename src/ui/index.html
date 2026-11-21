@@ -156,7 +156,40 @@
   .tile.missing .t { color: var(--mute); }
   .tile.missing .s { color: var(--amber); }
   .tile.missing:hover { border-color: var(--amber); }
-  .tile .n { position: absolute; right: 8px; top: 8px; font: 500 9px/1 var(--mono); color: var(--mute-3); }
+  .tile .n { position: absolute; right: 26px; top: 8px; font: 500 9px/1 var(--mono); color: var(--mute-3); }
+  .tile .t { padding-right: 16px; }
+
+  /* grouped / not grouped */
+  .ico { width: 12px; height: 12px; flex: none; display: inline-block; vertical-align: -2px; }
+  .gi { position: absolute; right: 7px; top: 7px; line-height: 0; color: var(--mute-3); }
+  .gi.g { color: var(--mute); }
+  .tile.on .gi.g, .tile.hl .gi.g { color: var(--signal); }
+  .tile.hl { border-color: rgba(37,247,22,.55); }
+  .tile.loose .s { color: var(--mute-3); }
+  .tile.ghost .gi { opacity: .45; }
+
+  /* the group layer: one frame behind all of a group's windows on a screen */
+  .layers { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+  .layers .lf { fill: rgba(244,243,240,.07); shape-rendering: crispEdges; }
+  .layers .le { fill: none; stroke: #5d5c57; stroke-width: 1; shape-rendering: crispEdges; }
+  .layers .on .lf { fill: rgba(37,247,22,.11); }
+  .layers .on .le { stroke: var(--signal); stroke-width: 1.5; filter: drop-shadow(0 0 5px rgba(37,247,22,.5)); }
+  .layers .dim { opacity: .3; }
+  .gl { position: absolute; z-index: 6; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 7px;
+        padding: 4px 8px 4px 7px; background: var(--ink); border: 1px solid var(--line-3);
+        font: 500 9.5px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--paper); white-space: nowrap; cursor: pointer; }
+  .gl:hover { border-color: var(--mute); }
+  .gl i { font-style: normal; color: var(--mute-2); letter-spacing: .08em; }
+  .gl.on { background: var(--signal); border-color: var(--signal); color: var(--ink); }
+  .gl.on i { color: rgba(10,10,10,.6); }
+  .gl.dim { opacity: .4; }
+
+  .state { width: 16px; display: grid; place-items: center; color: var(--mute-2); }
+  .state.g { color: var(--signal); }
+  .state.p { color: var(--amber); }
+  .legend { display: flex; gap: 18px; margin-left: 22px; }
+  .lg { display: inline-flex; align-items: center; gap: 7px; color: var(--mute-2); }
+  .lg.g { color: var(--mute); }
   .empty-stage { position: absolute; inset: 0; display: grid; place-items: center; color: var(--mute-2); }
 
   /* ---------- detail */
@@ -227,6 +260,7 @@
     <main>
       <div class="bar">
         <span class="cap" id="viewLabel">Everything on screen</span>
+        <span class="legend cap"><span class="lg g" id="lgG"></span><span class="lg" id="lgU"></span></span>
         <div class="spacer"></div>
         <div class="seg" id="scope"><button data-s="claude">Claude</button><button data-s="all">All apps</button></div>
       </div>
@@ -251,6 +285,21 @@ let scopeTouched = !!localStorage.getItem("wg.scope");
 const picked = new Set();           // handles picked in the live view
 const ticked = new Set(JSON.parse(localStorage.getItem("wg.ticked") || "[]"));
 let pop = null;
+let hoverGroup = null;              // group row under the mouse: lit up on the map
+
+// Grouped: two stacked frames, the front one filled. Not grouped: one dashed frame.
+const ICON_GROUPED = '<svg class="ico" viewBox="0 0 12 12" aria-hidden="true"><path d="M3.5 3V.5h8v8H9" fill="none" stroke="currentColor"/><rect x=".5" y="3.5" width="8" height="8" fill="currentColor" fill-opacity=".22" stroke="currentColor"/></svg>';
+const ICON_LOOSE = '<svg class="ico" viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" fill="none" stroke="currentColor" stroke-dasharray="2 1.6"/></svg>';
+
+// Which saved groups each open window belongs to.
+function membership() {
+  const m = new Map();
+  for (const g of S.groups) for (const s of g.slots) if (s.open && s.h) {
+    if (!m.has(s.h)) m.set(s.h, []);
+    m.get(s.h).push(g);
+  }
+  return m;
+}
 
 // ------------------------------------------------------------------ server
 async function getState() {
@@ -372,6 +421,7 @@ function renderGroups() {
 function renderDetected() {
   const el = $("#detected");
   const ds = detectedInScope();
+  const mem = membership();
   $("#dCount").textContent = ds.length || "";
   if (!ds.length) {
     setHTML(el, '<div style="padding:0 22px 16px" class="hint">No screen has two or more ' + (scope === "all" ? "" : "Claude ") + 'windows on it right now.</div>');
@@ -379,14 +429,87 @@ function renderDetected() {
   }
   setHTML(el, ds.map(d => {
     const sel = view.kind === "detected" && view.mon === d.mon;
+    const k = d.handles.filter(h => mem.has(h)).length, all = d.handles.length;
+    const st = d.savedAs || k === all ? "g" : k > 0 ? "p" : "u";
+    const said = d.savedAs ? 'Grouped &middot; <b>' + esc(d.savedAs) + '</b>'
+               : k === all ? 'Grouped' : k > 0 ? k + ' of ' + all + ' grouped' : 'Not grouped - just placed';
     return '<div class="row' + (sel ? " sel" : "") + '" data-mon="' + d.mon + '">' +
-      '<div class="glyph' + (d.tiled ? " tiled" : "") + '"><i></i><i></i><i></i><i></i></div>' +
+      '<div class="state ' + st + '">' + (st === "u" ? ICON_LOOSE : ICON_GROUPED) + '</div>' +
       '<div style="min-width:0"><div class="name">' + esc(d.monName) + '</div>' +
-      '<div class="meta">' + plural(d.handles.length, "window") + ' &middot; ' + (d.tiled ? "tiled" : "loose") +
-      (d.behind ? ' &middot; +' + d.behind + ' behind' : '') +
-      (d.savedAs ? ' &middot; <b>' + esc(d.savedAs) + '</b>' : '') + '</div></div>' +
-      '<div class="dot' + (d.savedAs ? " all" : "") + '"></div></div>';
+      '<div class="meta">' + plural(all, "window") + ' &middot; ' + (d.tiled ? "tiled" : "loose") +
+      (d.behind ? ' &middot; +' + d.behind + ' behind' : '') + '</div>' +
+      '<div class="meta" style="color:' + (st === "g" ? "var(--paper)" : st === "p" ? "var(--amber)" : "var(--mute-2)") + '">' + said + '</div></div>' +
+      '<div class="dot' + (st === "g" ? " all" : st === "p" ? " some" : "") + '"></div></div>';
   }).join(""));
+}
+
+// The group layer: a frame drawn BEHIND all of a group's windows, one per screen it covers,
+// with the group's name on it - so a group reads as one thing, and windows that are merely
+// placed next to each other plainly do not have one. The selected group's layer is drawn from
+// its saved slots (including any that are not open); every other group's from where its
+// windows actually are.
+function groupLayers(g, active, dimOthers) {
+  const pad = 8;
+  let paths = "", labels = "";
+  for (const gr of S.groups) {
+    const rects = [];
+    const fromSlots = view.kind === "group" && view.id === gr.id;
+    for (const sl of gr.slots) {
+      let r = null;
+      if (fromSlots) r = { mon: sl.mon, x: sl.x + 7, y: sl.y, w: sl.w - 14, h: sl.h2 - 7 };
+      else if (sl.open) {
+        const w = winByH(sl.h);
+        if (w && !w.min && (scope === "all" || w.claude)) r = { mon: w.mon, x: w.vx, y: w.vy, w: w.vw, h: w.vh };
+      }
+      if (r) rects.push({ mon: r.mon, l: g.X(r.x) - pad, t: g.Y(r.y) - pad, r: g.X(r.x + r.w) + pad, b: g.Y(r.y + r.h) + pad });
+    }
+    if (!rects.length) continue;
+    const on = active.has(gr.id), dim = dimOthers && !on;
+    const cls = (on ? "on" : "") + (dim ? " dim" : "");
+    const u = unionOutline(rects);
+    paths += '<g class="' + cls + '"><path class="lf" d="' + u.fill + '"/><path class="le" d="' + u.edges + '"/></g>';
+    // one name tag per screen the group covers, on its top-left window
+    const firsts = new Map();
+    for (const r of rects) {
+      const f = firsts.get(r.mon);
+      if (!f || r.t < f.t - 2 || (Math.abs(r.t - f.t) <= 2 && r.l < f.l)) firsts.set(r.mon, r);
+    }
+    for (const r of firsts.values())
+      labels += '<span class="gl ' + cls + '" data-gsel="' + esc(gr.id) + '" title="Open this group" style="left:' + (r.l + 10).toFixed(1) + 'px;top:' + r.t.toFixed(1) + 'px">' +
+                ICON_GROUPED + esc(gr.name) + ' <i>' + gr.open + '/' + gr.slots.length + '</i></span>';
+  }
+  return { html: paths ? '<svg class="layers">' + paths + '</svg>' : "", labels };
+}
+
+// The exact outline of a set of overlapping rectangles. A bounding box around a group would
+// swallow a window that merely sits between two of its members and make it look grouped; the
+// layer has to follow the group's windows and nothing else. Every rectangle edge cuts the plane
+// into a small grid, each cell is in or out, and an outline edge is wherever an "in" cell meets
+// an "out" one. A dozen windows make a few hundred cells - nothing.
+function unionOutline(rects) {
+  const xs = [...new Set(rects.flatMap(r => [r.l, r.r]))].sort((a, b) => a - b);
+  const ys = [...new Set(rects.flatMap(r => [r.t, r.b]))].sort((a, b) => a - b);
+  const cells = [];
+  for (let i = 0; i < xs.length - 1; i++) {
+    cells.push([]);
+    for (let j = 0; j < ys.length - 1; j++) {
+      const cx = (xs[i] + xs[i + 1]) / 2, cy = (ys[j] + ys[j + 1]) / 2;
+      cells[i].push(rects.some(r => cx > r.l && cx < r.r && cy > r.t && cy < r.b));
+    }
+  }
+  const inside = (i, j) => i >= 0 && j >= 0 && i < cells.length && j < cells[0].length && cells[i][j];
+  const f = v => v.toFixed(1);
+  let fill = "", edges = "";
+  for (let i = 0; i < cells.length; i++) for (let j = 0; j < cells[i].length; j++) {
+    if (!cells[i][j]) continue;
+    const x1 = f(xs[i]), x2 = f(xs[i + 1]), y1 = f(ys[j]), y2 = f(ys[j + 1]);
+    fill += "M" + x1 + " " + y1 + "H" + x2 + "V" + y2 + "H" + x1 + "Z";
+    if (!inside(i - 1, j)) edges += "M" + x1 + " " + y1 + "V" + y2;
+    if (!inside(i + 1, j)) edges += "M" + x2 + " " + y1 + "V" + y2;
+    if (!inside(i, j - 1)) edges += "M" + x1 + " " + y1 + "H" + x2;
+    if (!inside(i, j + 1)) edges += "M" + x1 + " " + y2 + "H" + x2;
+  }
+  return { fill, edges };
 }
 
 // The map: every screen to scale, windows drawn where they really are.
@@ -401,16 +524,23 @@ function geometry() {
   return { s, X: x => ox + (x - minX) * s, Y: y => oy + (y - minY) * s };
 }
 
-function tileHtml(cls, g, x, y, w, h, title, sub, attrs, n) {
+function tileHtml(cls, g, x, y, w, h, title, sub, attrs, n, mark) {
   const W = Math.max(14, w * g.s), H = Math.max(14, h * g.s);
   const small = W < 90 || H < 46;
   return '<div class="tile ' + cls + '" ' + (attrs || "") + ' style="left:' + g.X(x).toFixed(1) + 'px;top:' + g.Y(y).toFixed(1) +
     'px;width:' + W.toFixed(1) + 'px;height:' + H.toFixed(1) + 'px">' +
+    (mark && W >= 26 ? '<span class="gi ' + mark + '" title="' + (mark === "g" ? "In a saved group" : "Not in any group") + '">' + (mark === "g" ? ICON_GROUPED : ICON_LOOSE) + '</span>' : '') +
     (n ? '<span class="n">' + n + '</span>' : '') +
     (small ? '' : '<div class="t">' + esc(title) + '</div>' + (sub ? '<div class="s">' + sub + '</div>' : '')) + '</div>';
 }
 
+function renderLegend() {
+  setHTML($("#lgG"), ICON_GROUPED + "Grouped");
+  setHTML($("#lgU"), ICON_LOOSE + "Not grouped");
+}
+
 function renderStage() {
+  renderLegend();
   const c = $("#canvas");
   if (!S.monitors.length) { setHTML(c, ""); return; }
   const g = geometry();
@@ -426,29 +556,48 @@ function renderStage() {
   }
 
   const wins = winsInScope().filter(w => !w.min).sort((a, b) => b.z - a.z);   // bottom of the stack drawn first
+  const mem = membership();
+  const names = h => esc((mem.get(h) || []).map(x => x.name).join(" / "));
+
+  // Which group is lit: the one selected, the one whose screen is selected, the one hovered.
+  const active = new Set();
+  if (view.kind === "group") active.add(view.id);
+  if (view.kind === "detected") {
+    const d = detectedInScope().find(x => x.mon === view.mon);
+    const gr = d && d.savedAs && S.groups.find(x => x.name === d.savedAs);
+    if (gr) active.add(gr.id);
+  }
+  if (hoverGroup) active.add(hoverGroup);
+  const L = groupLayers(g, active, view.kind === "group");
+  html += L.html; labels += L.labels;
+
   if (view.kind === "live") {
     for (const w of wins) {
-      const on = picked.has(w.h);
-      html += tileHtml("pick" + (on ? " on" : ""), g, w.vx, w.vy, w.vw, w.vh, w.title, on ? "picked" : (w.max ? "maximized" : ""), 'data-pick="' + w.h + '"');
+      const on = picked.has(w.h), gs = mem.get(w.h);
+      const lit = gs && gs.some(x => active.has(x.id));
+      const sub = on ? "picked" : gs ? names(w.h) : (w.max ? "maximized &middot; not grouped" : "not grouped");
+      html += tileHtml("pick" + (on ? " on" : "") + (lit ? " hl" : "") + (gs ? "" : " loose"), g, w.vx, w.vy, w.vw, w.vh, w.title, sub,
+                       'data-pick="' + w.h + '"', null, gs ? "g" : "u");
     }
   } else if (view.kind === "detected") {
     const d = detectedInScope().find(x => x.mon === view.mon);
     const set = new Set(d ? d.handles : []);
     for (const w of wins) {
-      if (set.has(w.h)) html += tileHtml("on", g, w.vx, w.vy, w.vw, w.vh, w.title, "open", "");
-      else html += tileHtml("ghost", g, w.vx, w.vy, w.vw, w.vh, w.title, "", "");
+      const gs = mem.get(w.h);
+      if (set.has(w.h)) html += tileHtml("on" + (gs ? "" : " loose"), g, w.vx, w.vy, w.vw, w.vh, w.title, gs ? names(w.h) : "not grouped", "", null, gs ? "g" : "u");
+      else html += tileHtml("ghost", g, w.vx, w.vy, w.vw, w.vh, w.title, "", "", null, gs ? "g" : "u");
     }
   } else if (view.kind === "group") {
     const gr = S.groups.find(x => x.id === view.id);
     const used = new Set(gr ? gr.slots.filter(s => s.open).map(s => s.h) : []);
-    for (const w of wins) if (!used.has(w.h)) html += tileHtml("ghost", g, w.vx, w.vy, w.vw, w.vh, w.title, "", "");
+    for (const w of wins) if (!used.has(w.h)) html += tileHtml("ghost", g, w.vx, w.vy, w.vw, w.vh, w.title, "", "", null, mem.has(w.h) ? "g" : "u");
     if (gr) {
       const order = gr.slots.slice().sort((a, b) => b.z - a.z);
       for (const s of order) {
         const n = String(s.i + 1).padStart(2, "0");
         // a slot's rect includes the invisible 7px resize border; draw the visible part
         const x = s.x + 7, y = s.y, w = s.w - 14, h = s.h2 - 7;
-        if (s.open) html += tileHtml("on", g, x, y, w, h, s.title, "open", 'data-slot="' + s.i + '"', n);
+        if (s.open) html += tileHtml("on", g, x, y, w, h, s.title, "open", 'data-slot="' + s.i + '"', n, "g");
         else html += tileHtml("missing", g, x, y, w, h, s.title, "not open &middot; replace", 'data-miss="' + s.i + '"', n);
       }
     }
@@ -463,7 +612,10 @@ function renderDetail() {
     const n = picked.size;
     setHTML(el,
       '<div class="dhead"><div><div class="dtitle">' + (n ? plural(n, "window") + " picked" : "Pick windows on the map") + '</div>' +
-      '<div class="dmeta meta">' + plural(winsInScope().length, "window") + ' open &middot; ' + plural(S.monitors.length, "screen") + '</div></div>' +
+      '<div class="dmeta meta">' + plural(winsInScope().length, "window") + ' open &middot; ' +
+        (() => { const mem = membership(); const k = winsInScope().filter(w => mem.has(w.h)).length;
+                 return '<b>' + k + '</b> grouped &middot; ' + (winsInScope().length - k) + ' not grouped'; })() +
+        ' &middot; ' + plural(S.monitors.length, "screen") + '</div></div>' +
       '<div class="actions">' +
         (n ? '<input id="newName" class="btn" style="width:220px;cursor:text" placeholder="Name this group" autocomplete="off">' : '') +
         '<button class="btn primary" id="savePicked"' + (n ? "" : " disabled") + '>Save as group</button>' +
@@ -542,6 +694,13 @@ $("#groups").addEventListener("dblclick", e => {
   const r = e.target.closest("[data-id]");
   if (r && !e.target.closest("[data-tick]")) run("deploy", { ids: [r.getAttribute("data-id")] });
 });
+$("#groups").addEventListener("mouseover", e => {
+  const r = e.target.closest("[data-id]");
+  const id = r ? r.getAttribute("data-id") : null;
+  if (id !== hoverGroup) { hoverGroup = id; renderStage(); }
+});
+$("#groups").addEventListener("mouseleave", () => { if (hoverGroup) { hoverGroup = null; renderStage(); } });
+
 $("#detected").addEventListener("click", e => {
   const r = e.target.closest("[data-mon]");
   if (r) { view = { kind: "detected", mon: +r.getAttribute("data-mon") }; closePop(); render(); }
@@ -559,6 +718,8 @@ $("#swAuto").addEventListener("click", () => run("setting", { key: "autoRestore"
 $("#swStart").addEventListener("click", () => run("setting", { key: "startWithWindows", value: !S.settings.startWithWindows }));
 
 $("#canvas").addEventListener("click", e => {
+  const gl = e.target.closest("[data-gsel]");
+  if (gl) { view = { kind: "group", id: gl.getAttribute("data-gsel") }; closePop(); render(); return; }
   const p = e.target.closest("[data-pick]");
   if (p) { const h = p.getAttribute("data-pick"); picked.has(h) ? picked.delete(h) : picked.add(h); render(); return; }
   const m = e.target.closest("[data-miss]");

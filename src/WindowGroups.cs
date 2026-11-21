@@ -38,8 +38,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Save window layouts. Bring them back.")]
 [assembly: AssemblyProduct("Window Groups")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace WindowGroups
 {
@@ -1076,7 +1076,7 @@ namespace WindowGroups
             res["detected"] = detected(true);
             res["detectedAll"] = detected(false);
             res["claudeFound"] = wins.Any(w => w.IsClaude) || titles.Count > 0;
-            res["version"] = "1.0.0";
+            res["version"] = "1.1.0";
             return res;
         }
 

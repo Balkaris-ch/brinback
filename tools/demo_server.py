@@ -30,7 +30,7 @@ for g in G: g["open"] = sum(s["open"] for s in g["slots"])
 D = [dict(mon=0, monName="Left", tiled=True, coverage=1, behind=0, handles=[w["h"] for w in W if w["mon"] == 0], savedAs="Website"),
      dict(mon=1, monName="Main", tiled=True, coverage=1, behind=1, handles=[w["h"] for w in W if w["mon"] == 1], savedAs=None),
      dict(mon=2, monName="Right", tiled=False, coverage=.7, behind=0, handles=[w["h"] for w in W if w["mon"] == 2], savedAs=None)]
-STATE = dict(monitors=M, windows=W, groups=G, detected=D, detectedAll=D, settings=dict(autoRestore=True, startWithWindows=True), claudeFound=True, version="1.0.0")
+STATE = dict(monitors=M, windows=W, groups=G, detected=D, detectedAll=D, settings=dict(autoRestore=True, startWithWindows=True), claudeFound=True, version="1.1.0")
 class H(http.server.BaseHTTPRequestHandler):
     def send(self, code, body, ct):
         b = body.encode(); self.send_response(code); self.send_header("Content-Type", ct); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)

@@ -18,6 +18,11 @@ other app's windows too.
 - **Detects layouts.** Every screen with two or more windows on it shows up under *On screen
   now*, named by where the screen sits ("Top left", "Main", "Far right"). Only what you can
   actually see counts - a window hidden behind others is left out. One click saves it.
+- **Shows what is grouped and what is just placed.** Every saved group gets a layer on the map -
+  a frame that follows its windows exactly, with the group's name on it - and every window
+  carries an icon: two stacked frames for grouped, one dashed frame for not grouped. A window
+  that merely sits between two members stays outside the layer. Hover or select a group and its
+  layer lights up; *On screen now* says it in words: *Grouped*, *2 of 4 grouped*, *Not grouped*.
 - **Saves any set.** Or pick windows straight off the map, across as many screens as you like.
 - **Deploys.** Every window goes back to its saved place and size, and the saved top window
   ends on top. Tick several groups and deploy them together, or pick one from the tray menu.
