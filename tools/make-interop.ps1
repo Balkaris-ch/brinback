@@ -1,6 +1,6 @@
 # Writes obj/Interop.UIAutomationClient.dll from the UI Automation type library that ships inside
 # Windows (UIAutomationCore.dll). build.cmd compiles with /link against it, which copies the few
-# interface definitions the app uses into WindowGroups.exe itself - so the exe still needs no
+# interface definitions the app uses into Brinback.exe itself - so the exe still needs no
 # other file next to it.
 #
 # Why UI Automation at all: the Snap Layouts flyout and Snap Assist are the only way Windows

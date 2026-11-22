@@ -1,5 +1,5 @@
 @echo off
-REM Builds dist/WindowGroups.exe with the C# compiler that ships with Windows (.NET Framework 4).
+REM Builds dist/Brinback.exe with the C# compiler that ships with Windows (.NET Framework 4).
 REM Nothing to install. The UI page is embedded into the exe, so the exe is the whole program.
 setlocal
 cd /d "%~dp0"
@@ -20,16 +20,16 @@ if not exist "obj/Interop.UIAutomationClient.dll" (
 if not exist dist mkdir dist
 
 "%CSC%" /nologo /target:winexe /optimize+ /platform:anycpu ^
-  /out:dist\WindowGroups.exe ^
+  /out:dist\Brinback.exe ^
   /win32icon:assets\app.ico ^
-  /resource:src\ui\index.html,WindowGroups.index.html ^
+  /resource:src\ui\index.html,Brinback.index.html ^
   /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll ^
   /link:obj\Interop.UIAutomationClient.dll ^
-  src\WindowGroups.cs
+  src\Brinback.cs
 if errorlevel 1 (
   echo.
   echo Build failed.
   exit /b 1
 )
-echo Built dist/WindowGroups.exe
+echo Built dist/Brinback.exe
 endlocal

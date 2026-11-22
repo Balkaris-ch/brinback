@@ -1,17 +1,20 @@
-// Window Groups for macOS - save a set of windows exactly as they sit, bring them all back with
+// Brinback for macOS - save a set of windows exactly as they sit, bring them all back with
 // one click, and put them back by themselves when the app that owns them restarts.
 //
-// The Mac sibling of src/WindowGroups.cs. Same interface (src/ui/index.html, served the same way,
+// The Mac sibling of src/Brinback.cs. Same interface (src/ui/index.html, served the same way,
 // same API), a different engine underneath:
 //
 //   Desk         screens from CoreGraphics; windows from the Accessibility API (titles, moving,
 //                raising) matched to CoreGraphics' window list (stacking order, window ids)
 //   Claude       the Claude desktop app's session pop-outs, so a window is remembered by session
-//   Store        groups.json in ~/Library/Application Support/WindowGroups
+//   Store        groups.json in ~/Library/Application Support/Brinback
 //   Layouts      matches a saved group to the windows open now, finds layouts on each screen
 //   AutoRestore  puts a group's windows back in place as they open
 //   Server       a loopback-only HTTP server for the interface, which a WKWebView window shows
+//   Updater      asks GitHub for the latest release; Update pulls the source and rebuilds here
 //   App          the menu bar item, the window, start at login
+//
+// Brinback was called Window Groups up to 1.5; the groups saved under that name are carried over.
 //
 // One file, plain swiftc - see build.sh. Needs Accessibility access (System Settings > Privacy &
 // Security > Accessibility): macOS lets no app read or move another app's windows without it.
@@ -27,8 +30,8 @@ import Network
 import ServiceManagement
 import WebKit
 
-let appVersion = "1.5.0"
-let uiTitle = "Window Groups"
+let appVersion = "1.6.0"                 // must match the release tag (v1.6.0): the updater compares them
+let uiTitle = "Brinback"
 
 // MARK: - the desktop
 
@@ -373,9 +376,18 @@ final class StoreData: Codable {
 enum Store {
     static var dir: URL = {
         if let custom = ProcessInfo.processInfo.environment["WG_HOME"] { return URL(fileURLWithPath: custom) }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/WindowGroups")
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Brinback")
     }()
     static var file: URL { return dir.appendingPathComponent("groups.json") }
+
+    // Brinback was Window Groups up to 1.5. Its groups are copied over once - copied, not moved,
+    // so the old folder stays as a backup.
+    static func bringOld() {
+        let old = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/WindowGroups/groups.json")
+        guard !FileManager.default.fileExists(atPath: file.path), FileManager.default.fileExists(atPath: old.path) else { return }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if (try? FileManager.default.copyItem(at: old, to: file)) != nil { Log.write("carried the groups over from Window Groups") }
+    }
     static var d = StoreData()
     static let gate = NSRecursiveLock()
 
@@ -558,7 +570,7 @@ enum Layouts {
 // MARK: - auto-restore
 
 // When a window that belongs to a group appears - after a restart, or when its app reopens it -
-// it is put in its slot, once. Windows that were already open when Window Groups started are
+// it is put in its slot, once. Windows that were already open when Brinback started are
 // left where they are; moving a window afterwards is never fought.
 enum AutoRestore {
     static var seen = Set<UInt32>()
@@ -682,6 +694,124 @@ enum Startup {
             return nil
         } catch {
             return error.localizedDescription
+        }
+    }
+}
+
+// MARK: - updates
+
+// Asks GitHub for the latest release - at start and twice a day. One plain request, no token, a
+// generic User-Agent, nothing about this Mac or its windows. The Mac app is built from source, so
+// Update does what you would do by hand: git pull in the clone this copy was built from (build.sh
+// writes that path into Info.plist), then mac/build.sh --install, which swaps the app and reopens
+// it. Each build is a new ad-hoc signature, so macOS asks for Accessibility again afterwards.
+enum Updater {
+    static let repo = "Balkaris-ch/brinback"
+    static var latest: String?              // a newer version than this one, or nil
+    static var lastError: String?
+    static var working = false
+
+    static var source: String? {
+        guard let p = Bundle.main.object(forInfoDictionaryKey: "BrinbackSource") as? String, !p.isEmpty,
+              FileManager.default.fileExists(atPath: p + "/mac/build.sh"),
+              FileManager.default.fileExists(atPath: p + "/.git") else { return nil }
+        return p
+    }
+
+    static func newer(_ a: String, than b: String) -> Bool {
+        let pa = a.split(separator: ".").map { Int($0) ?? 0 }
+        let pb = b.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(pa.count, pb.count) {
+            let x = i < pa.count ? pa[i] : 0
+            let y = i < pb.count ? pb[i] : 0
+            if x != y { return x > y }
+        }
+        return false
+    }
+
+    static func start() {
+        DispatchQueue.global().asyncAfter(deadline: .now() + 15) { check() }
+        let t = Timer(timeInterval: 12 * 60 * 60, repeats: true) { _ in DispatchQueue.global().async { check() } }
+        RunLoop.main.add(t, forMode: .common)
+    }
+
+    static func state() -> Any {
+        if latest == nil && lastError == nil { return NSNull() }
+        var o: [String: Any] = ["working": working]
+        o["version"] = latest ?? NSNull()
+        o["error"] = working ? NSNull() : (lastError ?? NSNull())
+        return o
+    }
+
+    // Never on the main thread: it waits for the answer.
+    static func check() {
+        if working { return }
+        var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!)
+        req.setValue("Brinback-updater", forHTTPHeaderField: "User-Agent")
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 20
+        let sem = DispatchSemaphore(value: 0)
+        var body = Data()
+        var problem: String? = "no answer from GitHub"
+        URLSession.shared.dataTask(with: req) { d, r, e in
+            if let e = e { problem = e.localizedDescription }
+            else if let h = r as? HTTPURLResponse, h.statusCode != 200 { problem = "GitHub answered \(h.statusCode)" }
+            else { problem = nil; body = d ?? Data() }
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + 30)
+        if let p = problem { lastError = p; Log.write("update: check failed - \(p)"); return }
+        let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
+        var tag = (json["tag_name"] as? String) ?? ""
+        if tag.hasPrefix("v") || tag.hasPrefix("V") { tag.removeFirst() }
+        lastError = nil
+        if newer(tag, than: appVersion) {
+            if latest != tag { Log.write("update: \(tag) is available") }
+            latest = tag
+        } else {
+            latest = nil
+        }
+        App.shared?.refreshMenu()
+    }
+
+    static func quote(_ s: String) -> String { return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+
+    // nil when the rebuild is under way, otherwise why it is not.
+    static func apply() -> String? {
+        if working { return nil }
+        guard let src = source else {
+            return "This copy does not know the folder it was built from. In that folder, run: git pull && mac/build.sh --install"
+        }
+        working = true
+        lastError = nil
+        try? FileManager.default.createDirectory(at: Store.dir, withIntermediateDirectories: true)
+        let log = Store.dir.appendingPathComponent("update.log").path
+        let failed = Store.dir.appendingPathComponent("update.failed").path
+        try? FileManager.default.removeItem(atPath: failed)
+        // Detached, because build.sh --install stops this app before it copies the new one in.
+        let work = "cd \(quote(src)) && git pull --ff-only && bash mac/build.sh --install"
+        let script = "nohup /bin/sh -c \(quote("( \(work) ) > \(quote(log)) 2>&1 || touch \(quote(failed))")) >/dev/null 2>&1 &"
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", script]
+        do { try p.run() } catch { working = false; lastError = error.localizedDescription; return lastError }
+        Log.write("update: pulling and rebuilding in \(src)")
+        App.shared?.refreshMenu()
+        watch(failed, tries: 120)
+        return nil
+    }
+
+    // If the pull or the build fails, the app is still running: say so instead of waiting for ever.
+    static func watch(_ failed: String, tries: Int) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            if FileManager.default.fileExists(atPath: failed) || tries <= 0 {
+                working = false
+                lastError = "the pull or the build did not go through - see update.log in ~/Library/Application Support/Brinback"
+                Log.write("update: failed")
+                App.shared?.refreshMenu()
+            } else {
+                watch(failed, tries: tries - 1)
+            }
         }
     }
 }
@@ -812,7 +942,7 @@ enum Api {
         for p in ["../src/ui/index.html", "../../src/ui/index.html", "../../../src/ui/index.html", "../../../../src/ui/index.html"] {
             if let s = try? String(contentsOf: here.appendingPathComponent(p), encoding: .utf8) { return s }
         }
-        return "<!doctype html><title>Window Groups</title><body>index.html is missing from the app.</body>"
+        return "<!doctype html><title>Brinback</title><body>index.html is missing from the app.</body>"
     }()
 
     static func handle(_ r: Request, _ srv: Server) -> Response {
@@ -820,7 +950,7 @@ enum Api {
         if host != "127.0.0.1:\(srv.port)" && host != "localhost:\(srv.port)" { return .text(403, "forbidden") }
         if r.method == "GET" && r.path == "/" {
             if r.query["t"] != srv.token {
-                return .html(403, "<!doctype html><title>Window Groups</title><body style=\"background:#0a0a0a;color:#a09f9a;font:14px system-ui;padding:40px\">Open Window Groups from its icon in the menu bar.</body>")
+                return .html(403, "<!doctype html><title>Brinback</title><body style=\"background:#0a0a0a;color:#a09f9a;font:14px system-ui;padding:40px\">Open Brinback from its icon in the menu bar.</body>")
             }
             return .html(200, indexHtml.replacingOccurrences(of: "__TOKEN__", with: srv.token))
         }
@@ -887,6 +1017,7 @@ enum Api {
         res["detectedAll"] = detected(false)
         res["claudeFound"] = wins.contains { $0.isClaude } || !titles.isEmpty
         res["version"] = appVersion
+        res["update"] = Updater.state()
         return res
     }
 
@@ -904,7 +1035,7 @@ enum Api {
         let op = s(b, "op") ?? ""
         let needsAccess: Set<String> = ["deploy", "save", "update", "replace", "front", "minimize", "frontWindow", "frontHandles", "overlayHandles", "addToGroup"]
         if needsAccess.contains(op) && !Desk.trusted {
-            return fail(403, "Window Groups needs Accessibility access to read and move windows: System Settings > Privacy & Security > Accessibility.")
+            return fail(403, "Brinback needs Accessibility access to read and move windows: System Settings > Privacy & Security > Accessibility.")
         }
         switch op {
         case "deploy":
@@ -1057,7 +1188,7 @@ enum Api {
 
         case "openAccessibility":
             Desk.askForAccess()
-            return ok("In System Settings, switch on Window Groups under Accessibility.")
+            return ok("In System Settings, switch on Brinback under Accessibility.")
 
         case "setting":
             let key = s(b, "key"), on = bool(b, "value")
@@ -1069,10 +1200,21 @@ enum Api {
             if key == "startWithWindows" {
                 if let err = Startup.set(on) { return fail(500, "Could not change Open at Login: \(err)") }
                 App.shared?.refreshMenu()
-                return ok(on ? "Window Groups opens when you log in." : "Window Groups no longer opens when you log in.")
+                return ok(on ? "Brinback opens when you log in." : "Brinback no longer opens when you log in.")
             }
             if key == "keepSnaps" { return ok("macOS has no snap groups to keep.") }
             return fail(400, "Unknown setting.")
+
+        case "selfUpdate":
+            guard let v = Updater.latest else { return ok("Brinback is up to date.") }
+            if let err = Updater.apply() { return fail(500, err) }
+            return ok("Updating to \(v): pulling the source and rebuilding. Brinback reopens by itself - then switch it off and on again under Accessibility.")
+
+        case "checkUpdate":
+            Updater.check()
+            if let v = Updater.latest { return ok("Brinback \(v) is available.") }
+            if let e = Updater.lastError { return fail(502, "Could not check for updates: \(e)") }
+            return ok("Brinback \(appVersion) is the latest.")
 
         default:
             return fail(400, "Unknown action.")
@@ -1100,22 +1242,25 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
     var deployMenu = NSMenu()
     var autoItem: NSMenuItem!
     var loginItem: NSMenuItem!
+    var updateItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ n: Notification) {
         App.shared = self
+        Store.bringOld()
         Store.load()
         server = Server(port: 47391)
         do { try server.start() } catch {
             // Most likely another copy already has the port: ask it to show itself, and leave.
-            DistributedNotificationCenter.default().postNotificationName(Notification.Name("ch.balkaris.windowgroups.show"), object: nil, userInfo: nil, deliverImmediately: true)
+            DistributedNotificationCenter.default().postNotificationName(Notification.Name("ch.balkaris.brinback.show"), object: nil, userInfo: nil, deliverImmediately: true)
             Log.write("server: port \(server.port) busy (\(error)) - another copy is running")
             NSApp.terminate(nil)
             return
         }
-        DistributedNotificationCenter.default().addObserver(forName: Notification.Name("ch.balkaris.windowgroups.show"), object: nil, queue: .main) { [weak self] _ in self?.showWindow() }
+        DistributedNotificationCenter.default().addObserver(forName: Notification.Name("ch.balkaris.brinback.show"), object: nil, queue: .main) { [weak self] _ in self?.showWindow() }
         buildStatusItem()
         if !Desk.trusted { Desk.askForAccess() }
         AutoRestore.start()
+        Updater.start()
         Log.write("started \(appVersion)")
         if !CommandLine.arguments.contains("--tray") { showWindow() }
     }
@@ -1142,7 +1287,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
         status.button?.toolTip = uiTitle
         let m = NSMenu()
         m.delegate = self
-        m.addItem(withTitle: "Open Window Groups", action: #selector(openUi), keyEquivalent: "").target = self
+        m.addItem(withTitle: "Open Brinback", action: #selector(openUi), keyEquivalent: "").target = self
         m.addItem(.separator())
         let d = NSMenuItem(title: "Deploy", action: nil, keyEquivalent: "")
         d.submenu = deployMenu
@@ -1152,7 +1297,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
         loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: ""); loginItem.target = self
         m.addItem(autoItem); m.addItem(loginItem)
         m.addItem(.separator())
-        m.addItem(withTitle: "Quit Window Groups", action: #selector(quit), keyEquivalent: "q").target = self
+        updateItem = NSMenuItem(title: "Check for Updates", action: #selector(updateFromMenu), keyEquivalent: ""); updateItem.target = self
+        m.addItem(updateItem)
+        m.addItem(.separator())
+        m.addItem(withTitle: "Quit Brinback", action: #selector(quit), keyEquivalent: "q").target = self
         status.menu = m
         refreshMenu()
     }
@@ -1167,6 +1315,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
             let gs = Store.d.groups.map { ($0.id, $0.name) }
             Store.gate.unlock()
             loginItem.state = Startup.on ? .on : .off
+            if Updater.working { updateItem.title = "Updating..." }
+            else if let v = Updater.latest { updateItem.title = "Update to \(v)" }
+            else { updateItem.title = "Check for Updates  (v\(appVersion))" }
+            updateItem.isEnabled = !Updater.working
             deployMenu.removeAllItems()
             if gs.isEmpty { deployMenu.addItem(withTitle: "No groups yet", action: nil, keyEquivalent: "") }
             for (id, name) in gs {
@@ -1184,6 +1336,27 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
         refreshMenu()
     }
     @objc func toggleLogin() { _ = Startup.set(!Startup.on); refreshMenu() }
+    @objc func updateFromMenu() {
+        DispatchQueue.global().async { [self] in
+            if Updater.latest == nil { Updater.check() }
+            if Updater.latest != nil {
+                if let err = Updater.apply() { say("Brinback could not update", err) }
+            } else if let e = Updater.lastError {
+                say("Could not check for updates", e)
+            } else {
+                say("Brinback is up to date", "Version \(appVersion) is the latest.")
+            }
+        }
+    }
+    func say(_ title: String, _ text: String) {
+        DispatchQueue.main.async {
+            let a = NSAlert()
+            a.messageText = title
+            a.informativeText = text
+            NSApp.activate(ignoringOtherApps: true)
+            a.runModal()
+        }
+    }
     @objc func deployFromMenu(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         DispatchQueue.global().async {
@@ -1207,7 +1380,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
             w.contentView = web
             w.minSize = NSSize(width: 900, height: 600)
             w.center()
-            w.setFrameAutosaveName("WindowGroupsMain")
+            w.setFrameAutosaveName("BrinbackMain")
             web.load(URLRequest(url: URL(string: "http://127.0.0.1:\(server.port)/?t=\(server.token)")!))
             window = w
         }
@@ -1236,7 +1409,7 @@ enum SelfTest {
     }
 
     static func run() -> Int32 {
-        print("Window Groups \(appVersion) self-test")
+        print("Brinback \(appVersion) self-test")
         // screens: names from where they sit
         let ms: [Mon] = [(-2560, 0), (0, 0), (2560, 0), (0, -1440)].enumerated().map { (i, p) -> Mon in
             let m = Mon(); m.index = i; m.x = p.0; m.y = p.1; m.w = 2560; m.h = 1440; m.wx = p.0; m.wy = p.1 + 25; m.ww = 2560; m.wh = 1415; m.primary = p.0 == 0 && p.1 == 0
@@ -1275,6 +1448,7 @@ enum SelfTest {
         Store.d = StoreData(); g.id = Store.newId(); Store.d.groups = [g]; Store.save(); Store.d = StoreData(); Store.load()
         check(Store.d.groups.first?.slots.count == 4, "groups.json saves and loads")
         check(Store.freeName("Platform") == "Platform 2", "a free name next to a taken one")
+        check(Updater.newer("1.7.0", than: "1.6.0") && Updater.newer("1.10.0", than: "1.9.3") && !Updater.newer("1.6.0", than: "1.6.0") && !Updater.newer("1.5.9", than: "1.6.0"), "versions compare by number, not by text")
         try? FileManager.default.removeItem(at: Store.dir)
 
         // the server: token, Host check, state shape
@@ -1298,7 +1472,7 @@ enum SelfTest {
         let (code, body) = get("/api/state", token: srv.token)
         let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
         check(code == 200, "state answers")
-        for k in ["monitors", "windows", "groups", "settings", "detected", "detectedAll", "version", "platform"] { check(json[k] != nil, "state has \(k)") }
+        for k in ["monitors", "windows", "groups", "settings", "detected", "detectedAll", "version", "platform", "update"] { check(json[k] != nil, "state has \(k)") }
         check((json["monitors"] as? [Any])?.isEmpty == false, "at least one screen is seen (\((json["monitors"] as? [Any])?.count ?? 0))")
         print(failures == 0 ? "all good" : "\(failures) failed")
         return failures == 0 ? 0 : 1

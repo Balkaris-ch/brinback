@@ -1,4 +1,4 @@
-# Draws the Window Groups mark - four tiles, the top-left one lit - at every size Windows asks
+# Draws the Brinback mark - four tiles, the top-left one lit - at every size Windows asks
 # for, and writes them into assets/app.ico as PNG-compressed icon entries.
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing

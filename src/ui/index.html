@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Window Groups</title>
+<title>Brinback</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 fill=%27%230a0a0a%27/%3E%3Crect x=%272%27 y=%272%27 width=%275%27 height=%275%27 fill=%27%2325f716%27/%3E%3Crect x=%279%27 y=%272%27 width=%275%27 height=%275%27 fill=%27%23f4f3f0%27/%3E%3Crect x=%272%27 y=%279%27 width=%275%27 height=%275%27 fill=%27%23f4f3f0%27/%3E%3Crect x=%279%27 y=%279%27 width=%275%27 height=%275%27 fill=%27%23f4f3f0%27/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -297,12 +297,19 @@
             background: var(--ink-3); border: 1px solid var(--line-3); border-left: 2px solid var(--amber); padding: 12px 14px 12px 18px; max-width: 820px; color: var(--mute); }
   .access b { color: var(--paper); font-weight: 500; }
   .access.show { display: flex; }
+  /* a newer release is out: one quiet button next to the wordmark */
+  .update { display: none; height: 26px; padding: 0 11px; border: 1px solid var(--signal); background: var(--signal-dim); color: var(--signal); border-radius: 2px; cursor: pointer;
+            font: 500 10.5px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; align-items: center; gap: 8px; transition: background .15s, color .15s; }
+  .update.show { display: inline-flex; }
+  .update:hover { background: var(--signal); color: var(--ink); }
+  .update.busy { pointer-events: none; border-color: var(--line-3); background: transparent; color: var(--mute); }
 </style>
 </head>
 <body>
 <div class="app">
   <header>
-    <div class="brand"><div class="mark"><i></i><i></i><i></i><i></i></div><div class="wordmark">WINDOW GROUPS</div></div>
+    <div class="brand"><div class="mark"><i></i><i></i><i></i><i></i></div><div class="wordmark">BRINBACK</div></div>
+    <button class="update" id="update"></button>
     <div class="spacer"></div>
     <div class="live"><span class="pulse" id="pulse"></span><span class="cap" id="liveLabel">Live</span></div>
     <div class="switch" id="swAuto" title="When a window that belongs to a group opens, put it in its place"><span class="track"></span><span class="cap">Auto-restore</span></div>
@@ -337,8 +344,8 @@
   </div>
 </div>
 <div class="toast" id="toast"></div>
-<div class="offline" id="offline"><div class="cap">Window Groups is not running. Start it again.</div></div>
-<div class="access" id="access"><span><b>Window Groups needs Accessibility access</b> to read window names and move windows. macOS lets no app do that without your say-so.</span><button class="btn primary" id="grantAccess">Open System Settings</button></div>
+<div class="offline" id="offline"><div class="cap">Brinback is not running. Start it again.</div></div>
+<div class="access" id="access"><span><b>Brinback needs Accessibility access</b> to read window names and move windows. macOS lets no app do that without your say-so.</span><button class="btn primary" id="grantAccess">Open System Settings</button></div>
 
 <script>
 "use strict";
@@ -359,6 +366,7 @@ let hoverDet = null;                // a Windows snap group (chip) under the mou
 let filter = localStorage.getItem("wg.filter") || "all";       // all | grouped | loose
 let zoomAll = localStorage.getItem("wg.zoomAll") === "1";        // selection: zoom to its screens, or show all
 let query = "";
+let shownUpdateError = null;
 
 const curDetected = () => view.kind === "detected" ? detectedInScope().find(x => x.key === view.key) : null;
 function openDetected(key) {
@@ -408,7 +416,7 @@ async function act(op, body) {
     method: "POST", headers: { "Content-Type": "application/json", "X-Token": TOKEN },
     body: JSON.stringify(Object.assign({ op }, body || {}))
   });
-  const j = await r.json().catch(() => ({ error: "No answer from Window Groups." }));
+  const j = await r.json().catch(() => ({ error: "No answer from Brinback." }));
   if (!r.ok || j.error) { const e = new Error(j.error || ("HTTP " + r.status)); e.status = r.status; throw e; }
   return j;
 }
@@ -499,6 +507,15 @@ document.addEventListener("keydown", e => {
 function render() {
   if (!S) return;
   $("#ver").textContent = S.version;
+  const up = S.update, ub = $("#update");
+  ub.classList.toggle("show", !!(up && up.version));
+  if (up && up.version) {
+    ub.classList.toggle("busy", !!up.working);
+    ub.textContent = up.working ? "Updating to " + up.version + " ..." : "Update available · " + up.version;
+    ub.title = isMac() ? "Pulls the new source and rebuilds Brinback here. macOS will ask for Accessibility again afterwards."
+                       : "Downloads Brinback " + up.version + " from GitHub, checks it, and restarts. Your groups stay as they are.";
+    if (up.error && up.error !== shownUpdateError) { shownUpdateError = up.error; toast("Update did not go through: " + up.error, true); }
+  }
   $("#swAuto").classList.toggle("on", S.settings.autoRestore);
   $("#swStart").classList.toggle("on", S.settings.startWithWindows);
   $("#swStartLabel").textContent = isMac() ? "Open at login" : "Start with Windows";
@@ -970,7 +987,7 @@ function renderDetail() {
       '<p class="hint" style="margin-top:14px">Click a window on the map to take it out of this group or put it in - windows hidden behind count too. ' +
       (d.kind === "snap" && !d.savedAs
         ? '<b>Windows made this a snap group.</b> Windows forgets snap groups every time it restarts; ' +
-          (S.settings.keepSnaps ? 'Window Groups keeps it for you once it has held still for twenty seconds, as <b>' + esc(freeName(d.monName)) + '</b>.' : 'save it here and it comes back after a restart.')
+          (S.settings.keepSnaps ? 'Brinback keeps it for you once it has held still for twenty seconds, as <b>' + esc(freeName(d.monName)) + '</b>.' : 'save it here and it comes back after a restart.')
         : '') + '</p>' +
       '<div class="slots">' + sel.map((h, i) => {
         const w = winByH(h) || {};
@@ -1093,6 +1110,7 @@ $("#backAll").addEventListener("click", backToAll);
 $("#swAuto").addEventListener("click", () => run("setting", { key: "autoRestore", value: !S.settings.autoRestore }));
 $("#swStart").addEventListener("click", () => run("setting", { key: "startWithWindows", value: !S.settings.startWithWindows }));
 $("#grantAccess").addEventListener("click", () => run("openAccessibility"));
+$("#update").addEventListener("click", () => { shownUpdateError = null; run("selfUpdate").catch(() => {}); });
 $("#swSnap").addEventListener("click", () => run("setting", { key: "keepSnaps", value: !S.settings.keepSnaps }));
 
 $("#canvas").addEventListener("click", e => {

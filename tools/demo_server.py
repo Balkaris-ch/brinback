@@ -4,7 +4,7 @@ project ever shows anyone's actual window titles.  python tools/demo_server.py  
 Six screens like a real desk: two on top, three across, a tall portrait one on the right. The
 Left screen holds two layouts at once - a 2x2 group with a 3-column group stacked in front of it -
 because that is the case the map has to make readable."""
-import http.server, json, pathlib
+import http.server, json, pathlib, sys
 
 UI_FILE = pathlib.Path(__file__).resolve().parent.parent / "src" / "ui" / "index.html"
 
@@ -67,7 +67,9 @@ def det(key, mon, kind, ws, saved=None, hidden=False):
                 hidden=hidden, handles=[w["h"] for w in ws], snap=[w["h"] for w in ws] if kind == "snap" else [], savedAs=saved)
 D = [det("0-0", 0, "snap", res, "Research"), det("0-1", 0, "snap", web, "Website", hidden=True), det("1-0", 1, "snap", snap),
      det("2-0", 2, "snap", core), det("3-0", 3, "placed", loose[:2]), det("4-0", 4, "snap", ops, "Operations")]
-STATE = dict(monitors=M, windows=W, groups=G, detected=D, detectedAll=D, claudeFound=True, version="1.5.0",
+STATE = dict(monitors=M, windows=W, groups=G, detected=D, detectedAll=D, claudeFound=True, version="1.6.0", platform="windows",
+             update=dict(version="1.7.0", working=False, error=None) if "--update" in sys.argv else None,   # shows the Update button
+            
              settings=dict(autoRestore=True, startWithWindows=True, keepSnaps=False))
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -80,4 +82,4 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self): return self.send(200, json.dumps(dict(ok=True, message="Demo - nothing moved.")), "application/json")
     def log_message(self, *a): pass
 
-http.server.ThreadingHTTPServer(("127.0.0.1", 47399), H).serve_forever()
+http.server.ThreadingHTTPServer(("127.0.0.1", 47398 if "--update" in sys.argv else 47399), H).serve_forever()

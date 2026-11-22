@@ -1,6 +1,8 @@
-# Window Groups
+# Brinback
 
 **Save window layouts. Bring them back.**
+
+*Formerly Window Groups. Same app, new name - your groups and settings come along by themselves.*
 
 A small tray app for Windows - and a menu bar app for the Mac - for people who work across many
 windows and several screens. It sees how your windows are arranged on each screen, saves a set of
@@ -27,7 +29,7 @@ other app's windows too.
   Esc, to go back to everything.
 - **Recognises the snap groups you make in Windows - and keeps them.** Windows 11 groups
   windows you snap with Snap Layouts, then forgets every one of those groups when it restarts.
-  Window Groups sees which windows are snapped (`IsWindowArranged`, the one signal Windows
+  Brinback sees which windows are snapped (`IsWindowArranged`, the one signal Windows
   gives), works out which snapped windows form one layout, and once it
   has held still for twenty seconds keeps it as a group named after its screen - so it comes back
   after a reboot. A kept snap group follows its layout as you resize it; rename or edit it and it
@@ -57,6 +59,8 @@ other app's windows too.
 - **Bring to front, minimize.** Bring a group's windows on top of everything without moving
   them - the quick answer to two groups stacked on one screen - or minimize them all.
   Double-click any window on the map to bring just that one to the front.
+  Windows drops a snap group once its windows are minimized one by one, so when *Bring to front*
+  restores a minimized layout it forms the snap group again, the way Deploy does.
 - **Auto-restore.** When a window that belongs to a group opens - after a reboot, or when you
   reopen the app - it is put in its slot. It happens once, when the window appears; moving it
   afterwards is never fought.
@@ -64,13 +68,16 @@ other app's windows too.
   with the window names, for six seconds.
 - **Handles what is missing.** A window that is not open is drawn dashed. Click it to put any
   other open window in that place; the slot keeps its position and size.
-- **Updates.** Rearranged a group and like it better? *Update positions*.
+- **Update positions.** Rearranged a group and like it better? *Update positions*.
+- **Keeps itself up to date.** When a newer release is out, *Update available* shows in the
+  header and in the tray menu. One click downloads it, checks it and restarts - see
+  [Updates](#updates).
 
 ![Every screen with the groups on it, front to back - and the windows in none](docs/detected.png)
 
 ## Install
 
-Download `WindowGroups.exe` from [Releases](../../releases) and run it. It lives in the tray
+Download `Brinback.exe` from [Releases](../../releases) and run it. It lives in the tray
 (four tiles, one lit). On first run it adds itself to start with Windows; switch that off in
 the app or the tray menu.
 
@@ -85,9 +92,36 @@ needs nothing installed:
 build.cmd
 ```
 
-That compiles `src/WindowGroups.cs` with the C# compiler that ships with Windows (.NET
-Framework 4) into `dist/WindowGroups.exe`, with the interface embedded. One file, no
+That compiles `src/Brinback.cs` with the C# compiler that ships with Windows (.NET
+Framework 4) into `dist/Brinback.exe`, with the interface embedded. One file, no
 dependencies.
+
+## Updates
+
+Brinback looks for a newer release when it starts and twice a day after that: one plain request
+to GitHub's public releases API - no account, no token, nothing about your PC or your windows.
+Nothing is downloaded until you click.
+
+When there is one, **Update available** appears next to the wordmark and in the tray menu. Click
+it and Brinback:
+
+1. downloads `Brinback.exe` from the release, next to the one that is running;
+2. checks it: the size and the SHA-256 GitHub publishes for the file, and that it starts and
+   reports the version the release says it is;
+3. renames the running exe to `Brinback.exe.old`, puts the new one in its place, and restarts
+   in the tray (reopening the window if it was open). The `.old` file is removed on the next start.
+
+If any check fails, nothing is replaced and the app says why. Your groups are not touched by an
+update. *Check for updates* in the tray menu looks right away.
+
+**Coming from Window Groups (1.5 or older)?** Those versions cannot update themselves. Download
+`Brinback.exe` once and run it: it stops the old copy, carries your groups over from
+`%APPDATA%/WindowGroups` (the old folder is left as a backup), and moves *Start with Windows* to
+the new name. Then delete `WindowGroups.exe`.
+
+On a Mac the app is built from source, so **Update to ...** in the menu bar menu (or the same
+button in the window) runs `git pull` and `mac/build.sh --install` in the folder it was built
+from, and reopens. macOS then asks for Accessibility again, because each build is a new signature.
 
 ## On a Mac
 
@@ -97,21 +131,21 @@ for macOS 13 (Ventura) or newer.
 
 **Install it with Claude.** Open Claude Code on the Mac and say:
 
-> Clone https://github.com/Balkaris-ch/window-groups and run `mac/build.sh --install`.
+> Clone https://github.com/Balkaris-ch/brinback and run `mac/build.sh --install`.
 
 That builds the app from source and puts it in `~/Applications` - no download to trust, no
 Gatekeeper warning, no admin password. Or do it yourself in Terminal:
 
 ```
-git clone https://github.com/Balkaris-ch/window-groups
-cd window-groups
+git clone https://github.com/Balkaris-ch/brinback
+cd brinback
 mac/build.sh --install
 ```
 
 It needs Apple's command line tools (`xcode-select --install`, if `swiftc` is missing).
 
 **One step only you can do:** macOS lets no app read or move another app's windows until you allow
-it. When asked, switch on *Window Groups* under **System Settings > Privacy & Security >
+it. When asked, switch on *Brinback* under **System Settings > Privacy & Security >
 Accessibility**. (After rebuilding, switch it off and on again there - each build is a new
 signature.)
 
@@ -122,17 +156,21 @@ What is different on a Mac:
   positions and sizes, which on a Mac is all there is.
 - Lives in the **menu bar** (four tiles, one lit), and opens its window from there.
 - *Open at login* instead of *Start with Windows*.
-- Groups are kept in `~/Library/Application Support/WindowGroups/groups.json`.
+- Groups are kept in `~/Library/Application Support/Brinback/groups.json` (carried over from
+  `.../WindowGroups` if you had the app under its old name).
+- If the clone on your Mac is still called `window-groups`, it keeps working: GitHub redirects
+  the old address.
 
 ## Privacy and security
 
-- Everything stays on your PC. Groups are kept in `%APPDATA%/WindowGroups/groups.json`.
+- Everything stays on your PC. Groups are kept in `%APPDATA%/Brinback/groups.json`.
   There is no account, no telemetry, nothing sent anywhere.
 - The interface is served on `127.0.0.1` only. Every request must carry the right `Host`
   header (no DNS rebinding) and a random token generated at each start, which only the window
   the tray opens is given. Other programs and web pages cannot drive it.
-- The one outside request is the interface loading the Geist typeface from Google Fonts. With
-  no connection it falls back to Segoe UI.
+- Two outside requests, neither carrying anything about you: the interface loads the Geist
+  typeface from Google Fonts (with no connection it falls back to Segoe UI), and the app asks
+  GitHub's public API for the latest release (see [Updates](#updates)).
 - It reads window titles and positions, and the Claude desktop app's `session-popouts.json`
   (session id and title only). It moves windows only when you deploy, or when auto-restore
   puts a newly opened window into its saved place.
@@ -143,7 +181,7 @@ What is different on a Mac:
   windows. A window moved to the right coordinates keeps rounded corners and a visible seam, and
   windows snapped one by one with Win+Arrow sit in the right places but are not a group - the
   taskbar does not list them as one. A snap group forms only when windows are snapped through
-  Snap Layouts and Snap Assist. So for a layout that fills a screen, Window Groups does exactly
+  Snap Layouts and Snap Assist. So for a layout that fills a screen, Brinback does exactly
   that: Win+Z on the first window, presses the zone of the matching layout, then picks each
   remaining window in Snap Assist. It reads both through UI Automation, so nothing is guessed:
   - the layout is chosen by the shape of its zones - not by its number, which shifts with the
@@ -158,7 +196,7 @@ What is different on a Mac:
   grouped on Left, snapped one by one".
 
 - **Snapping one window, not just moving it.** For a single window in a half or a quarter that is
-  not part of a full layout, Window Groups snaps it the way a person does - Win+Left/Right for a
+  not part of a full layout, Brinback snaps it the way a person does - Win+Left/Right for a
   half, then Win+Up/Down for a quarter - with safeguards:
   - a snapped window stays "snapped" even after it is moved by code, and Win+Left on a window
     already snapped left throws it onto the next screen, so every window is unsnapped first;
@@ -191,22 +229,23 @@ What is different on a Mac:
 
 ## Uninstall
 
-Exit from the tray menu, switch off *Start with Windows* first (or delete the `Window Groups`
+Exit from the tray menu, switch off *Start with Windows* first (or delete the `Brinback`
 value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`), delete the exe, and delete
-`%APPDATA%/WindowGroups`.
+`%APPDATA%/Brinback`.
 
 ## Building and hacking
 
 | | |
 |---|---|
-| `src/WindowGroups.cs` | the whole program: window handling, detection, auto-restore, the local server, tray, overlay |
+| `src/Brinback.cs` | the whole program: window handling, detection, auto-restore, the local server, tray, overlay |
 | `src/ui/index.html` | the interface, embedded into the exe at build time |
-| `build.cmd` | builds `dist/WindowGroups.exe` |
+| `build.cmd` | builds `dist/Brinback.exe` |
 | `tools/make-interop.ps1` | writes the UI Automation interop from the type library inside Windows; `build.cmd` runs it and links the few interfaces it needs into the exe |
 | `tools/make-icon.ps1` | draws `assets/app.ico` |
 | `tools/demo_server.py` | serves the interface against made-up windows, for screenshots |
-| `mac/WindowGroups.swift` | the Mac app: windows through the Accessibility API, the same interface in a WKWebView |
-| `mac/build.sh` | builds `Window Groups.app`; `--install` puts it in `~/Applications`, `--selftest` tests it |
+| `tools/release.cmd` | builds and checks that the exe, the Mac source and the tag agree on the version |
+| `mac/Brinback.swift` | the Mac app: windows through the Accessibility API, the same interface in a WKWebView |
+| `mac/build.sh` | builds `Brinback.app`; `--install` puts it in `~/Applications`, `--selftest` tests it |
 | `.github/workflows/mac.yml` | builds and self-tests the Mac app on a GitHub-hosted Mac on every change |
 
 ## License

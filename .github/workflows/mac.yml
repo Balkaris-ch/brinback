@@ -19,8 +19,8 @@ jobs:
       - name: Build and self-test
         run: bash mac/build.sh --selftest
       - name: Package
-        run: cd mac/dist && ditto -c -k --keepParent "Window Groups.app" WindowGroups-mac.zip
+        run: cd mac/dist && ditto -c -k --keepParent "Brinback.app" Brinback-mac.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: WindowGroups-mac
-          path: mac/dist/WindowGroups-mac.zip
+          name: Brinback-mac
+          path: mac/dist/Brinback-mac.zip

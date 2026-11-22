@@ -1,4 +1,4 @@
-// Window Groups - save a set of windows exactly as they sit, bring them all back with one click,
+// Brinback - save a set of windows exactly as they sit, bring them all back with one click,
 // and put them back by themselves when the app that owns them restarts.
 //
 // One file, C# 5, .NET Framework 4.x - so it builds with the csc.exe that ships with every copy
@@ -8,12 +8,15 @@
 //   Desk         reads and moves top-level windows; every coordinate is physical pixels
 //   Claude       knows where the Claude desktop app keeps its session pop-outs, so a window is
 //                remembered by its session, not just its title
-//   Store        groups.json in %APPDATA%\WindowGroups, written via temp file + replace
+//   Store        groups.json in %APPDATA%\Brinback, written via temp file + replace
 //   Layouts      matches a saved group to the windows open now, detects layouts on each screen
 //   AutoRestore  watches for windows that belong to a group and puts them in place as they open
 //   Overlay      draws a group on the real screens, with names, for a few seconds
 //   Http         a tiny loopback-only server for the UI (a web page in a chromeless window)
 //   Tray         the icon, its menu, starting with Windows
+//   Updater      asks GitHub for the latest release, and swaps the exe when you say so
+//
+// Brinback was called Window Groups up to 1.5. Legacy carries groups and settings over.
 
 using System;
 using System.Collections.Generic;
@@ -35,15 +38,23 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 using Interop.UIAutomationClient;
 
-[assembly: AssemblyTitle("Window Groups")]
+[assembly: AssemblyTitle("Brinback")]
 [assembly: AssemblyDescription("Save window layouts. Bring them back.")]
-[assembly: AssemblyProduct("Window Groups")]
+[assembly: AssemblyProduct("Brinback")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyVersion("1.5.0.0")]
-[assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: AssemblyVersion(Brinback.AppInfo.Version + ".0")]
+[assembly: AssemblyFileVersion(Brinback.AppInfo.Version + ".0")]
 
-namespace WindowGroups
+namespace Brinback
 {
+    // The one place the version lives. It must match the release tag (v1.6.0): the updater
+    // compares it with the tag of the latest release.
+    static class AppInfo
+    {
+        public const string Version = "1.6.0";
+        public const string Repo = "Balkaris-ch/brinback";
+    }
+
     // ============================================================ native
 
     static class N
@@ -86,6 +97,7 @@ namespace WindowGroups
         [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
         [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
         [DllImport("kernel32.dll")] public static extern uint GetTickCount();
+        [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
 
         [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr dwExtraInfo; }
         [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr dwExtraInfo; }
@@ -130,7 +142,7 @@ namespace WindowGroups
 
     static class Desk
     {
-        public const string UiTitle = "Window Groups";
+        public const string UiTitle = "Brinback";
         static readonly int SelfPid = Process.GetCurrentProcess().Id;
 
         public static List<Mon> Monitors()
@@ -809,7 +821,7 @@ namespace WindowGroups
 
     static class Store
     {
-        public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WindowGroups");
+        public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Brinback");
         public static readonly string FilePath = Path.Combine(Dir, "groups.json");
         public static Data D = new Data();
         public static readonly object Gate = new object();
@@ -870,6 +882,71 @@ namespace WindowGroups
         public static string NewId()
         {
             return Guid.NewGuid().ToString("N").Substring(0, 10);
+        }
+    }
+
+    // Brinback was Window Groups up to 1.5. Everything a person had there comes along: the
+    // groups, Start with Windows, and the old copy is stopped so two never run side by side.
+    static class Legacy
+    {
+        const string OldName = "Window Groups";
+        static readonly string OldDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WindowGroups");
+
+        // Copied, not moved: the old folder stays as it was, as a backup.
+        public static void BringGroups()
+        {
+            try
+            {
+                string old = Path.Combine(OldDir, "groups.json");
+                if (File.Exists(Store.FilePath) || !File.Exists(old)) return;
+                Directory.CreateDirectory(Store.Dir);
+                File.Copy(old, Store.FilePath, false);
+                Log.Write("carried the groups over from Window Groups");
+            }
+            catch (Exception e) { Log.Write("legacy: groups not carried over - " + e.Message); }
+        }
+
+        public static void StopOldCopy()
+        {
+            try
+            {
+                Mutex m;
+                try { m = Mutex.OpenExisting("Local\\WindowGroups.Single"); } catch { return; }
+                m.Dispose();
+                foreach (var p in Process.GetProcessesByName("WindowGroups"))
+                {
+                    try { p.Kill(); p.WaitForExit(4000); } catch { }
+                }
+                // its window, a chromeless browser window that would now talk to nobody
+                N.EnumWindows(delegate (IntPtr h, IntPtr l)
+                {
+                    if (!N.IsWindowVisible(h)) return true;
+                    var sb = new StringBuilder(64);
+                    N.GetWindowText(h, sb, sb.Capacity);
+                    if (sb.ToString() != OldName) return true;
+                    uint pid; N.GetWindowThreadProcessId(h, out pid);
+                    try { if (Process.GetProcessById((int)pid).ProcessName.Equals("msedge", StringComparison.OrdinalIgnoreCase)) N.PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); } catch { }
+                    return true;
+                }, IntPtr.Zero);
+                Log.Write("stopped the running copy of Window Groups");
+            }
+            catch (Exception e) { Log.Write("legacy: " + e.Message); }
+        }
+
+        // Start with Windows, under the new name and pointing at this exe.
+        public static void BringStartup()
+        {
+            try
+            {
+                using (var k = Registry.CurrentUser.CreateSubKey("Software\\Microsoft\\Windows\\CurrentVersion\\Run"))
+                {
+                    if (k.GetValue(OldName) == null) return;
+                    Startup.Set(true);
+                    if (Startup.On) k.DeleteValue(OldName, false);
+                    Log.Write("Start with Windows now starts Brinback");
+                }
+            }
+            catch (Exception e) { Log.Write("legacy: startup not carried over - " + e.Message); }
         }
     }
 
@@ -985,11 +1062,15 @@ namespace WindowGroups
 
         static readonly object deployGate = new object();
 
-        public static DeployResult Deploy(Group g) { return Deploy(g, false); }
+        public static DeployResult Deploy(Group g) { return Deploy(g, false, null); }
+        public static DeployResult Deploy(Group g, bool snapOnly) { return Deploy(g, snapOnly, null); }
 
         // snapOnly: leave placement alone, only snap what should be snapped and is not (used by
         // auto-restore once a group's windows have all reappeared).
-        public static DeployResult Deploy(Group g, bool snapOnly)
+        // regroup: windows whose snap group Windows has dropped although they still sit snapped
+        // in place (it drops a group once its windows are minimized one by one) - a layout holding
+        // one of them is formed again even though nothing has moved.
+        public static DeployResult Deploy(Group g, bool snapOnly, HashSet<long> regroup)
         {
             lock (deployGate)
             {
@@ -1010,7 +1091,8 @@ namespace WindowGroups
                         var m = Snapper.MonOf(g.Slots[set[0]], mons);
                         var members = live.Where(s => set.Contains(s.Index)).OrderBy(s => s.Slot.Y).ThenBy(s => s.Slot.X).ToList();
                         if (members.Count < 2 || members.Count != set.Count) continue;     // part of it not open: one by one below
-                        if (snapOnly && members.All(s => SnapGroups.InPlace(s.Window.Handle, s.Slot, m)))
+                        bool again = regroup != null && members.Any(s => regroup.Contains(s.Window.Handle));
+                        if (snapOnly && !again && members.All(s => SnapGroups.InPlace(s.Window.Handle, s.Slot, m)))
                         {
                             foreach (var s in members) done.Add(s.Index);
                             continue;
@@ -1405,6 +1487,29 @@ namespace WindowGroups
             }
             return wins.Count;
         }
+
+        // A saved group's windows on top. Minimized ones are restored - and that is where a
+        // Windows snap group is lost: minimized and restored one by one, its windows come back
+        // snapped in place, but Windows no longer lists them as a Group in the taskbar or Alt+Tab.
+        // So a layout that had minimized windows is formed again, the way Deploy forms it.
+        public static string Group(Group g)
+        {
+            var mons = Desk.Monitors();
+            var live = Layouts.Resolve(g, Desk.List(mons), Claude.Titles(), mons).Where(x => x.Window != null).OrderByDescending(x => x.Slot.Z).ToList();
+            var wasMin = new HashSet<long>(live.Where(x => x.Window.Min).Select(x => x.Window.Handle));
+            Bring(live.Select(x => x.Window).ToList());
+            string note = "";
+            bool inLayout = Layouts.SnapSets(g, mons).Any(set => live.Any(x => set.Contains(x.Index) && wasMin.Contains(x.Window.Handle)));
+            if (inLayout)
+            {
+                Thread.Sleep(400);                    // let them finish coming back
+                var r = Layouts.Deploy(g, true, wasMin);
+                Bring(live.Select(x => x.Window).ToList());
+                if (r.Grouped > 0) note = ", and grouped again as a Windows snap group";
+                else if (r.NotGrouped.Count > 0) note = " - Windows did not group them again on " + string.Join(", ", r.NotGrouped);
+            }
+            return live.Count + " window(s) of " + g.Name + " brought to the front" + note + ".";
+        }
     }
 
     // ============================================================ on-screen preview
@@ -1734,7 +1839,7 @@ namespace WindowGroups
         static string Index()
         {
             if (indexHtml != null) return indexHtml;
-            using (var s = Assembly.GetExecutingAssembly().GetManifestResourceStream("WindowGroups.index.html"))
+            using (var s = Assembly.GetExecutingAssembly().GetManifestResourceStream("Brinback.index.html"))
             using (var r = new StreamReader(s, Encoding.UTF8))
                 indexHtml = r.ReadToEnd();
             return indexHtml;
@@ -1749,7 +1854,7 @@ namespace WindowGroups
             if (r.Method == "GET" && r.Path == "/")
             {
                 if (r.Q("t") != h.Token)
-                    return Resp.Html(403, "<!doctype html><title>Window Groups</title><body style=\"background:#0a0a0a;color:#a09f9a;font:14px system-ui;padding:40px\">Open Window Groups from its icon in the tray.</body>");
+                    return Resp.Html(403, "<!doctype html><title>Brinback</title><body style=\"background:#0a0a0a;color:#a09f9a;font:14px system-ui;padding:40px\">Open Brinback from its icon in the tray.</body>");
                 return Resp.Html(200, Index().Replace("__TOKEN__", h.Token));
             }
             if (!r.Path.StartsWith("/api/")) return Resp.Text(404, "not found");
@@ -1824,7 +1929,8 @@ namespace WindowGroups
             res["detected"] = detected(true);
             res["detectedAll"] = detected(false);
             res["claudeFound"] = wins.Any(w => w.IsClaude) || titles.Count > 0;
-            res["version"] = "1.5.0";
+            res["version"] = AppInfo.Version;
+            res["update"] = Updater.State();
             res["platform"] = "windows";
             res["inset"] = 7;          // the invisible resize border around every window
             return res;
@@ -1988,10 +2094,7 @@ namespace WindowGroups
                     Group g;
                     lock (Store.Gate) g = Store.Find(S(b, "id"));
                     if (g == null) return Fail(404, "No such group.");
-                    var mons = Desk.Monitors();
-                    var live = Layouts.Resolve(g, Desk.List(mons), Claude.Titles(), mons).Where(x => x.Window != null).OrderByDescending(x => x.Slot.Z).ToList();
-                    Front.Bring(live.Select(x => x.Window).ToList());
-                    return Ok(live.Count + " window(s) of " + g.Name + " brought to the front.");
+                    return Ok(Front.Group(g));
                 }
                 case "minimize":
                 {
@@ -2086,9 +2189,24 @@ namespace WindowGroups
                     string key = S(b, "key");
                     bool on = B(b, "value");
                     if (key == "autoRestore") { lock (Store.Gate) { Store.D.AutoRestore = on; Store.Save(); } return Ok(on ? "Groups will put themselves back as their windows open." : "Auto-restore is off. Deploy groups by hand."); }
-                    if (key == "startWithWindows") { Startup.Set(on); return Ok(on ? "Window Groups starts with Windows." : "Window Groups no longer starts with Windows."); }
+                    if (key == "startWithWindows") { Startup.Set(on); return Ok(on ? "Brinback starts with Windows." : "Brinback no longer starts with Windows."); }
                     if (key == "keepSnaps") { lock (Store.Gate) { Store.D.KeepSnaps = on; Store.Save(); } return Ok(on ? "Snap groups you make in Windows are kept, and come back after a restart." : "Snap groups are no longer kept automatically."); }
                     return Fail(400, "Unknown setting.");
+                }
+                case "selfUpdate":
+                {
+                    string v = Updater.Latest;
+                    if (v == null) return Ok("Brinback is up to date.");
+                    if (Updater.Working) return Ok("Already updating to " + v + ".");
+                    Updater.Working = true;
+                    ThreadPool.QueueUserWorkItem(delegate { Thread.Sleep(600); Updater.Apply(); });
+                    return Ok("Updating to " + v + " - Brinback restarts in a moment.");
+                }
+                case "checkUpdate":
+                {
+                    Updater.Check();
+                    if (Updater.Latest != null) return Ok("Brinback " + Updater.Latest + " is available.");
+                    return Updater.LastError != null ? Fail(502, "Could not check for updates: " + Updater.LastError) : Ok("Brinback " + AppInfo.Version + " is the latest.");
                 }
                 default:
                     return Fail(400, "Unknown action.");
@@ -2103,12 +2221,157 @@ namespace WindowGroups
         }
     }
 
+    // ============================================================ updates
+
+    // Asks GitHub for the latest release - at start and twice a day. One plain request, no
+    // token, a generic User-Agent, nothing about this PC or its windows. Nothing is downloaded
+    // until you click Update. Then: the release exe is fetched next to this one, checked (size,
+    // SHA-256 as GitHub publishes it, and that it runs and reports the version expected), this
+    // exe is renamed to .old, the new one takes its name, and it is started in its place.
+    static class Updater
+    {
+        public static volatile string Latest;        // a newer version that can be installed, or null
+        public static volatile string LastError;     // why the last check or update failed
+        public static volatile bool Working;
+        static string assetUrl, assetDigest; static long assetSize;
+        static System.Threading.Timer timer;
+        static bool told;
+
+        // For testing against another repository's releases, or a pretend-older version.
+        static string Repo { get { return Environment.GetEnvironmentVariable("BRINBACK_UPDATE_REPO") ?? AppInfo.Repo; } }
+        static string Mine { get { return Environment.GetEnvironmentVariable("BRINBACK_UPDATE_FROM") ?? AppInfo.Version; } }
+
+        public static void Start()
+        {
+            try { ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072; } catch { }      // TLS 1.2
+            try { string old = Application.ExecutablePath + ".old"; if (File.Exists(old)) File.Delete(old); } catch { }
+            timer = new System.Threading.Timer(delegate { Check(); }, null, 15000, 12 * 60 * 60 * 1000);
+        }
+
+        public static object State()
+        {
+            if (Latest == null && LastError == null) return null;
+            return new Dictionary<string, object> { { "version", Latest }, { "working", Working }, { "error", Working ? null : LastError } };
+        }
+
+        static HttpWebRequest Ask(string url)
+        {
+            var q = (HttpWebRequest)WebRequest.Create(url);
+            q.UserAgent = "Brinback-updater";
+            q.Timeout = 20000; q.ReadWriteTimeout = 60000;
+            return q;
+        }
+
+        public static bool Newer(string candidate, string than)
+        {
+            Version a, b;
+            return System.Version.TryParse(candidate, out a) && System.Version.TryParse(than, out b) && a > b;
+        }
+
+        public static void Check()
+        {
+            if (Working) return;
+            try
+            {
+                var q = Ask("https://api.github.com/repos/" + Repo + "/releases/latest");
+                q.Accept = "application/vnd.github+json";
+                string json;
+                using (var r = q.GetResponse())
+                using (var sr = new StreamReader(r.GetResponseStream(), Encoding.UTF8)) json = sr.ReadToEnd();
+                var rel = Api.Ser.DeserializeObject(json) as Dictionary<string, object>;
+                string tag = rel != null && rel.ContainsKey("tag_name") ? Convert.ToString(rel["tag_name"]) : "";
+                string ver = tag.TrimStart('v', 'V');
+                string url = null, digest = null; long size = 0;
+                var assets = rel != null && rel.ContainsKey("assets") ? rel["assets"] as object[] : null;
+                foreach (var o in assets ?? new object[0])
+                {
+                    var a = o as Dictionary<string, object>;
+                    if (a == null || !string.Equals(Convert.ToString(a["name"]), "Brinback.exe", StringComparison.OrdinalIgnoreCase)) continue;
+                    url = Convert.ToString(a["browser_download_url"]);
+                    size = Convert.ToInt64(a["size"]);
+                    object d; if (a.TryGetValue("digest", out d) && d != null) digest = d.ToString();
+                }
+                LastError = null;
+                if (url != null && url.StartsWith("https://github.com/", StringComparison.OrdinalIgnoreCase) && size > 0 && Newer(ver, Mine))
+                {
+                    assetUrl = url; assetSize = size; assetDigest = digest;
+                    bool first = Latest != ver;
+                    Latest = ver;
+                    if (first) Log.Write("update: " + ver + " is available");
+                    if (!told) { told = true; App.OnUi(() => { if (App.TrayIcon != null) App.TrayIcon.Say("Brinback " + ver + " is available", "Open Brinback, or right-click this icon, to update."); }); }
+                }
+                else Latest = null;
+            }
+            catch (Exception e) { LastError = e.Message; Log.Write("update: check failed - " + e.Message); }
+        }
+
+        static string Fail(string why, string fresh)
+        {
+            LastError = why; Working = false;
+            Log.Write("update: " + why);
+            try { if (fresh != null && File.Exists(fresh)) File.Delete(fresh); } catch { }
+            return why;
+        }
+
+        // Returns null when the new copy has been started, otherwise why not. Nothing is touched
+        // until the download has passed every check.
+        public static string Apply()
+        {
+            Working = true;
+            string ver = Latest, exe = Application.ExecutablePath;
+            string fresh = Path.Combine(Path.GetDirectoryName(exe), Path.GetFileNameWithoutExtension(exe) + ".new.exe"), old = exe + ".old";
+            if (ver == null || assetUrl == null) return Fail("no update to install", null);
+            try
+            {
+                var q = Ask(assetUrl);
+                using (var r = q.GetResponse())
+                using (var net = r.GetResponseStream())
+                using (var f = File.Create(fresh))
+                {
+                    var buf = new byte[81920]; int n; long total = 0;
+                    while ((n = net.Read(buf, 0, buf.Length)) > 0) { f.Write(buf, 0, n); total += n; if (total > assetSize) break; }
+                }
+                long got = new FileInfo(fresh).Length;
+                if (got != assetSize) return Fail("the download is " + got + " bytes, the release says " + assetSize, fresh);
+                if (assetDigest != null && assetDigest.StartsWith("sha256:"))
+                {
+                    string sum;
+                    using (var sha = SHA256.Create()) using (var f = File.OpenRead(fresh)) sum = BitConverter.ToString(sha.ComputeHash(f)).Replace("-", "").ToLowerInvariant();
+                    if (sum != assetDigest.Substring(7).ToLowerInvariant()) return Fail("the download does not match the checksum of the release", fresh);
+                }
+                // It has to run, and be the version it claims.
+                string said = "";
+                using (var p = Process.Start(new ProcessStartInfo(fresh, "--version") { UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true }))
+                {
+                    said = p.StandardOutput.ReadToEnd().Trim();
+                    if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } return Fail("the new version did not answer", fresh); }
+                }
+                if (said != ver) return Fail("the download says it is '" + said + "', not " + ver, fresh);
+
+                try { if (File.Exists(old)) File.Delete(old); } catch { }
+                File.Move(exe, old);
+                try { File.Move(fresh, exe); }
+                catch { File.Move(old, exe); throw; }
+                Log.Write("update: " + AppInfo.Version + " -> " + ver + ", restarting");
+
+                // The window belongs to this run (its token dies with it): close it, and let the
+                // new copy open its own if one was open.
+                IntPtr ui = Desk.FindUi();
+                if (ui != IntPtr.Zero) N.PostMessage(ui, 0x0010, IntPtr.Zero, IntPtr.Zero);
+                Process.Start(new ProcessStartInfo(exe, (ui != IntPtr.Zero ? "" : "--tray ") + "--after-update") { UseShellExecute = false });
+                App.Quit();
+                return null;
+            }
+            catch (Exception e) { return Fail(e.Message, fresh); }
+        }
+    }
+
     // ============================================================ start with Windows
 
     static class Startup
     {
         const string RunKey = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-        const string Name = "Window Groups";
+        const string Name = "Brinback";
 
         public static bool On
         {
@@ -2177,7 +2440,7 @@ namespace WindowGroups
         {
             menu = new ContextMenuStrip { Renderer = new DarkRenderer(), ShowImageMargin = true, Font = new Font("Segoe UI", 9.5f) };
             menu.Opening += delegate (object s, System.ComponentModel.CancelEventArgs e) { Build(); e.Cancel = false; };
-            icon = new NotifyIcon { Icon = AppIcon.Make(), Text = "Window Groups", Visible = true, ContextMenuStrip = menu };
+            icon = new NotifyIcon { Icon = AppIcon.Make(), Text = "Brinback", Visible = true, ContextMenuStrip = menu };
             icon.MouseClick += delegate (object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) App.OpenUi(); };
             Build();
         }
@@ -2185,7 +2448,7 @@ namespace WindowGroups
         void Build()
         {
             menu.Items.Clear();
-            var open = new ToolStripMenuItem("Open Window Groups") { Font = new Font("Segoe UI Semibold", 9.5f) };
+            var open = new ToolStripMenuItem("Open Brinback") { Font = new Font("Segoe UI Semibold", 9.5f) };
             open.Click += delegate { App.OpenUi(); };
             menu.Items.Add(open);
             menu.Items.Add(new ToolStripSeparator());
@@ -2225,12 +2488,45 @@ namespace WindowGroups
             start.Click += delegate { Startup.Set(!Startup.On); };
             menu.Items.Add(start);
             menu.Items.Add(new ToolStripSeparator());
+            string latest = Updater.Latest;
+            if (latest != null)
+            {
+                var up = new ToolStripMenuItem(Updater.Working ? "Updating to " + latest + "..." : "Update to " + latest) { Enabled = !Updater.Working, Font = new Font("Segoe UI Semibold", 9.5f) };
+                up.Click += delegate
+                {
+                    if (Updater.Working) return;
+                    Updater.Working = true;
+                    ThreadPool.QueueUserWorkItem(delegate
+                    {
+                        string err = Updater.Apply();
+                        if (err != null) App.OnUi(() => Say("Brinback could not update", err));
+                    });
+                };
+                menu.Items.Add(up);
+            }
+            else
+            {
+                var chk = new ToolStripMenuItem("Check for updates    v" + AppInfo.Version);
+                chk.Click += delegate
+                {
+                    ThreadPool.QueueUserWorkItem(delegate
+                    {
+                        Updater.Check();
+                        string l = Updater.Latest, e = Updater.LastError;
+                        App.OnUi(() => Say(l != null ? "Brinback " + l + " is available" : e != null ? "Could not check for updates" : "Brinback is up to date",
+                                           l != null ? "Right-click this icon and choose Update." : e != null ? e : "Version " + AppInfo.Version + " is the latest."));
+                    });
+                };
+                menu.Items.Add(chk);
+            }
+            menu.Items.Add(new ToolStripSeparator());
             var quit = new ToolStripMenuItem("Exit");
-            quit.Click += delegate { icon.Visible = false; Overlay.CloseAll(); Application.Exit(); };
+            quit.Click += delegate { App.Quit(); };
             menu.Items.Add(quit);
         }
 
         public void Hide() { icon.Visible = false; }
+        public void Say(string title, string text) { try { icon.ShowBalloonTip(4000, title, text, ToolTipIcon.None); } catch { } }
     }
 
     static class AppIcon
@@ -2276,6 +2572,11 @@ namespace WindowGroups
         public static Control Ui;
         public static Http Server;
         public static Tray TrayIcon;
+
+        public static void Quit()
+        {
+            OnUi(() => { try { if (TrayIcon != null) TrayIcon.Hide(); Overlay.CloseAll(); } catch { } Application.Exit(); });
+        }
 
         public static void OnUi(Action a)
         {
@@ -2338,16 +2639,28 @@ namespace WindowGroups
             try { if (!N.SetProcessDpiAwarenessContext(new IntPtr(-4))) N.SetProcessDPIAware(); }
             catch { try { N.SetProcessDPIAware(); } catch { } }
 
+            // What the updater asks a download before trusting it: does it run, and which version is it.
+            if (args.Any(a => a == "--version"))
+            {
+                try { Console.Out.WriteLine(AppInfo.Version); Console.Out.Flush(); } catch { }
+                return;
+            }
+
             bool trayOnly = args.Any(a => string.Equals(a, "--tray", StringComparison.OrdinalIgnoreCase));
             bool created;
-            var mutex = new Mutex(true, "Local\\WindowGroups.Single", out created);
+            var mutex = new Mutex(true, "Local\\Brinback.Single", out created);
+            if (!created && args.Any(a => a == "--after-update"))
+            {
+                // Started by the copy this one replaces: wait for it to leave.
+                try { created = mutex.WaitOne(20000); } catch (AbandonedMutexException) { created = true; }
+            }
             if (!created)
             {
                 // Already running: bring its window forward instead of starting a second copy.
-                try { EventWaitHandle.OpenExisting("Local\\WindowGroups.Show").Set(); } catch { }
+                try { EventWaitHandle.OpenExisting("Local\\Brinback.Show").Set(); } catch { }
                 return;
             }
-            var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\WindowGroups.Show");
+            var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\Brinback.Show");
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
@@ -2355,9 +2668,12 @@ namespace WindowGroups
             AppDomain.CurrentDomain.UnhandledException += (s, e) => Log.Write("fatal: " + e.ExceptionObject);
 
             Directory.CreateDirectory(Store.Dir);
+            Legacy.StopOldCopy();
+            Legacy.BringGroups();
             bool firstRun = !File.Exists(Store.FilePath);
             Store.Load();
             if (firstRun) { try { Startup.Set(true); } catch { } Store.Save(); }
+            Legacy.BringStartup();
 
             Ui = new Control();
             var forceHandle = Ui.Handle;
@@ -2367,12 +2683,13 @@ namespace WindowGroups
             catch (Exception e)
             {
                 Log.Write("fatal: " + e.Message);
-                MessageBox.Show("Window Groups could not start: " + e.Message, "Window Groups");
+                MessageBox.Show("Brinback could not start: " + e.Message, "Brinback");
                 return;
             }
-            Log.Write("started" + (trayOnly ? " in the tray" : "") + ", port " + Server.Port + ", " + Store.D.Groups.Count + " group(s)");
+            Log.Write("started " + AppInfo.Version + (trayOnly ? " in the tray" : "") + ", port " + Server.Port + ", " + Store.D.Groups.Count + " group(s)");
 
             TrayIcon = new Tray();
+            Updater.Start();
             var auto = new AutoRestore();
             auto.Init();
             var tick = new System.Windows.Forms.Timer { Interval = 1500 };
