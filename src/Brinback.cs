@@ -47,11 +47,11 @@ using Interop.UIAutomationClient;
 
 namespace Brinback
 {
-    // The one place the version lives. It must match the release tag (v1.6.0): the updater
+    // The one place the version lives. It must match the release tag (v + this): the updater
     // compares it with the tag of the latest release.
     static class AppInfo
     {
-        public const string Version = "1.6.0";
+        public const string Version = "1.6.1";
         public const string Repo = "Balkaris-ch/brinback";
     }
 
@@ -2392,6 +2392,39 @@ namespace Brinback
         }
     }
 
+    // Brinback is one exe with no installer, so nothing puts it in the Start menu - and Windows
+    // search only finds apps that are there. The app adds its own entry at start, and points it at
+    // wherever the exe is now if it was moved.
+    static class StartMenu
+    {
+        public static void Ensure()
+        {
+            try
+            {
+                string dir = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
+                string lnk = Path.Combine(dir, "Brinback.lnk");
+                string exe = Application.ExecutablePath;
+                Type t = Type.GetTypeFromProgID("WScript.Shell");
+                if (t == null) return;
+                object shell = Activator.CreateInstance(t);
+                object sc = t.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { lnk });
+                Type st = sc.GetType();
+                string now = File.Exists(lnk) ? st.InvokeMember("TargetPath", BindingFlags.GetProperty, null, sc, null) as string : null;
+                if (!string.Equals(now, exe, StringComparison.OrdinalIgnoreCase))
+                {
+                    st.InvokeMember("TargetPath", BindingFlags.SetProperty, null, sc, new object[] { exe });
+                    st.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, sc, new object[] { Path.GetDirectoryName(exe) });
+                    st.InvokeMember("Description", BindingFlags.SetProperty, null, sc, new object[] { "Save window layouts, bring them back" });
+                    st.InvokeMember("Save", BindingFlags.InvokeMethod, null, sc, null);
+                    Log.Write("Start menu: Brinback is listed, so Windows search finds it");
+                }
+                string old = Path.Combine(dir, "Window Groups.lnk");
+                if (File.Exists(old)) File.Delete(old);
+            }
+            catch (Exception e) { Log.Write("Start menu: " + e.Message); }
+        }
+    }
+
     // ============================================================ tray
 
     class DarkColors : ProfessionalColorTable
@@ -2674,6 +2707,7 @@ namespace Brinback
             Store.Load();
             if (firstRun) { try { Startup.Set(true); } catch { } Store.Save(); }
             Legacy.BringStartup();
+            StartMenu.Ensure();
 
             Ui = new Control();
             var forceHandle = Ui.Handle;
