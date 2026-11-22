@@ -928,7 +928,8 @@ function renderDetail() {
         (n ? '<input id="newName" class="btn" style="width:200px;cursor:text" placeholder="Name a new group" autocomplete="off">' : '') +
         '<button class="btn primary" id="savePicked"' + (n ? "" : " disabled") + '>Save as group</button>' +
         (n && S.groups.length ? '<select class="dark btnsel" id="addPicked">' + addOpts + '</select>' : '') +
-        '<button class="btn" id="showPicked"' + (n ? "" : " disabled") + '>Show on screen</button>' +
+        '<button class="btn" id="frontPicked"' + (n ? "" : " disabled") + ' title="Bring them on top of everything, ready to use">Bring to front</button>' +
+        '<button class="btn" id="showPicked"' + (n ? "" : " disabled") + ' title="Bring them to the front and outline them on your screens for a moment">Show on screen</button>' +
         (n ? '<button class="btn ghost" id="clearPicked">Clear</button>' : '') +
       '</div></div>' +
       (rows.length
@@ -963,7 +964,8 @@ function renderDetail() {
       (d.hidden ? ' &middot; behind other windows' : '') + (d.behind ? ' &middot; ' + d.behind + ' hidden behind' : '') +
       (d.savedAs ? ' &middot; already saved as <b>' + esc(d.savedAs) + '</b>' : '') + '</div></div>' +
       '<div class="actions"><button class="btn primary" id="saveDetected"' + (sel.length ? '' : ' disabled') + '>Save ' + plural(sel.length, "window") + ' as group</button>' +
-      '<button class="btn" id="showDetected"' + (sel.length ? '' : ' disabled') + '>Show on screen</button>' +
+      '<button class="btn" id="frontDetected"' + (sel.length ? '' : ' disabled') + ' title="Bring them on top of everything, ready to use">Bring to front</button>' +
+      '<button class="btn" id="showDetected"' + (sel.length ? '' : ' disabled') + ' title="Bring them to the front and outline them on your screens for a moment">Show on screen</button>' +
       (changed ? '<button class="btn ghost" id="resetPick">Reset</button>' : '') + '</div></div>' +
       '<p class="hint" style="margin-top:14px">Click a window on the map to take it out of this group or put it in - windows hidden behind count too. ' +
       (d.kind === "snap" && !d.savedAs
@@ -998,7 +1000,7 @@ function renderDetail() {
       '<button class="btn primary" id="deployOne">Deploy</button>' +
       '<button class="btn" id="frontGroup" title="Bring its windows on top of everything else, without moving them"' + (gr.open ? '' : ' disabled') + '>Bring to front</button>' +
       '<button class="btn" id="minGroup" title="Minimize its windows"' + (gr.open ? '' : ' disabled') + '>Minimize</button>' +
-      '<button class="btn" id="showGroup">Show on screen</button>' +
+      '<button class="btn" id="showGroup" title="Bring its windows to the front and outline them; windows that are not open show where they would go">Show on screen</button>' +
       '<button class="btn" id="updateGroup" title="Save where this group\'s windows are right now">Update positions</button>' +
       '<div class="switch' + (gr.auto ? " on" : "") + '" id="swGroupAuto" style="margin:0 6px" title="Put this group back by itself when its windows open"><span class="track"></span><span class="cap">Auto</span></div>' +
       '<button class="btn ghost danger" id="deleteGroup">Delete</button>' +
@@ -1154,6 +1156,8 @@ $("#detail").addEventListener("click", async e => {
   const wp = e.target.closest("[data-wpick]");
   if (wp) { const h = wp.getAttribute("data-wpick"); picked.has(h) ? picked.delete(h) : picked.add(h); render(); return; }
   if (id === "showPicked") run("overlayHandles", { handles: [...picked], label: "Picked" });
+  if (id === "frontPicked") run("frontHandles", { handles: [...picked] });
+  if (id === "frontDetected" && dpick) run("frontHandles", { handles: [...dpick] });
   if (id === "savePicked" || id === "saveDetected") {
     const name = ($("#newName") && $("#newName").value.trim()) || "";
     if (!name) { toast("Give the group a name first.", true); if ($("#newName")) $("#newName").focus(); return; }

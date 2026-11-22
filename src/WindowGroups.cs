@@ -1391,9 +1391,28 @@ namespace WindowGroups
         }
     }
 
+    static class Front
+    {
+        // wins: bottom of the stack first. The last one ends on top and gets the keyboard.
+        public static int Bring(List<Win> wins)
+        {
+            foreach (var w in wins) Desk.Raise(w.Handle);
+            if (wins.Count > 0)
+            {
+                var top = new IntPtr(wins[wins.Count - 1].Handle);
+                Thread.Sleep(60);
+                Snapper.Front(top);
+            }
+            return wins.Count;
+        }
+    }
+
     // ============================================================ on-screen preview
 
-    class Tile { public Rectangle R; public string Title; public string Sub; public bool Missing; public string Group; }
+    // Frame: an open window, brought to the front - only a thin outline and its name are drawn
+    // round it, so it stays visible and usable. A filled tile is only for a window that is not
+    // open: a placeholder where it would go.
+    class Tile { public Rectangle R; public string Title; public string Sub; public bool Missing; public string Group; public bool Frame; }
 
     class Overlay : Form
     {
@@ -1441,11 +1460,19 @@ namespace WindowGroups
             TopMost = true;
             StartPosition = FormStartPosition.Manual;
             Bounds = t.R;
-            BackColor = Ink;
-            Opacity = 0.97;
             DoubleBuffered = true;
-            Cursor = Cursors.Hand;
-            Click += delegate { CloseAll(); };
+            if (t.Frame)
+            {
+                // everything but the outline and the name tag is see-through and click-through
+                BackColor = Color.FromArgb(255, 0, 255);
+                TransparencyKey = BackColor;
+                Opacity = 0.99;
+            }
+            else
+            {
+                BackColor = Ink;
+                Opacity = 0.9;
+            }
         }
 
         protected override bool ShowWithoutActivation { get { return true; } }
@@ -1455,7 +1482,7 @@ namespace WindowGroups
             get
             {
                 var cp = base.CreateParams;
-                cp.ExStyle |= 0x80 | 0x08000000;            // WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+                cp.ExStyle |= 0x80 | 0x08000000 | 0x20;     // WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT: clicks go through
                 return cp;
             }
         }
@@ -1467,6 +1494,22 @@ namespace WindowGroups
             g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
             var r = ClientRectangle;
             int pad = Math.Max(14, Math.Min(r.Width, r.Height) / 22);
+            if (t.Frame)
+            {
+                g.SmoothingMode = SmoothingMode.None;
+                using (var pen = new Pen(Signal, 4f)) g.DrawRectangle(pen, 2, 2, r.Width - 5, r.Height - 5);
+                using (var mono = UiFont.Mono(12f))
+                {
+                    string label = ((t.Group ?? "").ToUpperInvariant() + "   " + UiFont.Plain(t.Title)).Trim();
+                    var sz = g.MeasureString(label, mono);
+                    float w = Math.Min(sz.Width + 20, r.Width - 8);
+                    using (var bg = new SolidBrush(Signal)) g.FillRectangle(bg, 4, 4, w, sz.Height + 10);
+                    using (var ink = new SolidBrush(Ink))
+                    using (var fmt = new StringFormat { Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap })
+                        g.DrawString(label, mono, ink, new RectangleF(14, 9, w - 20, sz.Height + 2), fmt);
+                }
+                return;
+            }
 
             using (var pen = new Pen(t.Missing ? Mute : Signal, 2f))
             {
@@ -1947,7 +1990,7 @@ namespace WindowGroups
                     if (g == null) return Fail(404, "No such group.");
                     var mons = Desk.Monitors();
                     var live = Layouts.Resolve(g, Desk.List(mons), Claude.Titles(), mons).Where(x => x.Window != null).OrderByDescending(x => x.Slot.Z).ToList();
-                    foreach (var x in live) Desk.Raise(x.Window.Handle);
+                    Front.Bring(live.Select(x => x.Window).ToList());
                     return Ok(live.Count + " window(s) of " + g.Name + " brought to the front.");
                 }
                 case "minimize":
@@ -1964,8 +2007,18 @@ namespace WindowGroups
                 {
                     var w = Desk.List(Desk.Monitors()).FirstOrDefault(x => x.Handle.ToString() == S(b, "handle"));
                     if (w == null) return Fail(404, "That window is not open any more.");
-                    Desk.Raise(w.Handle);
+                    Front.Bring(new List<Win> { w });
                     return Ok(UiFont.Plain(w.Title) + " brought to the front.");
+                }
+                case "frontHandles":
+                {
+                    // Picked windows, or a layout found on screen, on top - in their own stacking
+                    // order, the top one with the keyboard.
+                    var handles = new HashSet<string>(L(b, "handles"));
+                    var wins = Desk.List(Desk.Monitors()).Where(x => handles.Contains(x.Handle.ToString())).OrderByDescending(x => x.Z).ToList();
+                    if (wins.Count == 0) return Fail(404, "Those windows are not open any more.");
+                    Front.Bring(wins);
+                    return Ok((wins.Count == 1 ? UiFont.Plain(wins[0].Title) + " is" : wins.Count + " windows are") + " in front now.");
                 }
                 case "addToGroup":
                 {
@@ -1993,28 +2046,40 @@ namespace WindowGroups
                 case "overlay":
                 {
                     var tiles = new List<Tile>();
+                    var live = new List<Win>();
+                    string name;
                     lock (Store.Gate)
                     {
                         var g = Store.Find(S(b, "id"));
                         if (g == null) return Fail(404, "No such group.");
+                        name = g.Name;
                         var mons = Desk.Monitors();
-                        foreach (var s in Layouts.Resolve(g, Desk.List(mons), Claude.Titles(), mons))
+                        foreach (var s in Layouts.Resolve(g, Desk.List(mons), Claude.Titles(), mons).OrderByDescending(x => x.Slot.Z))
+                        {
+                            if (s.Window != null && !s.Window.Min) live.Add(s.Window);
                             tiles.Add(new Tile {
-                                R = Inset(s.Slot.X, s.Slot.Y, s.Slot.W, s.Slot.H), Title = s.Title, Group = g.Name, Missing = s.Window == null,
+                                R = s.Window != null && !s.Window.Min ? new Rectangle(s.Window.VX, s.Window.VY, s.Window.VW, s.Window.VH) : Inset(s.Slot.X, s.Slot.Y, s.Slot.W, s.Slot.H),
+                                Title = s.Title, Group = g.Name, Missing = s.Window == null, Frame = s.Window != null,
                                 Sub = s.Window == null ? "NOT OPEN" : "OPEN  " + s.Slot.W + " x " + s.Slot.H });
+                        }
                     }
-                    App.OnUi(() => Overlay.ShowTiles(tiles, 6));
-                    return Ok("Showing it on your screens for 6 seconds. Click any tile to close.");
+                    Front.Bring(live);
+                    App.OnUi(() => Overlay.ShowTiles(tiles, 4));
+                    return Ok("Brought " + name + " to the front" + (tiles.Any(x => x.Missing) ? " - the dashed places are windows that are not open." : "."));
                 }
                 case "overlayHandles":
                 {
                     var handles = new HashSet<string>(L(b, "handles"));
                     string label = S(b, "label") ?? "On screen";
                     var mons = Desk.Monitors();
-                    var tiles = Desk.List(mons).Where(w => handles.Contains(w.Handle.ToString())).Select(w => new Tile {
-                        R = new Rectangle(w.VX, w.VY, w.VW, w.VH), Title = w.Title, Group = label, Sub = "OPEN  " + w.W + " x " + w.H }).ToList();
-                    App.OnUi(() => Overlay.ShowTiles(tiles, 6));
-                    return Ok("Showing them on your screens for 6 seconds.");
+                    var wins = Desk.List(mons).Where(w => handles.Contains(w.Handle.ToString())).OrderByDescending(w => w.Z).ToList();
+                    if (wins.Count == 0) return Fail(404, "Those windows are not open any more.");
+                    Front.Bring(wins);
+                    // positions after bringing them up (a minimized one is restored first)
+                    var now = Desk.List(mons).Where(w => handles.Contains(w.Handle.ToString())).ToList();
+                    var tiles = now.Select(w => new Tile { R = new Rectangle(w.VX, w.VY, w.VW, w.VH), Title = w.Title, Group = label, Frame = true, Sub = "" }).ToList();
+                    App.OnUi(() => Overlay.ShowTiles(tiles, 4));
+                    return Ok((wins.Count == 1 ? UiFont.Plain(wins[0].Title) + " is" : wins.Count + " windows are") + " in front, outlined for a moment.");
                 }
                 case "setting":
                 {

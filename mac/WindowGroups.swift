@@ -251,6 +251,11 @@ enum Desk {
         }
     }
 
+    // wins: bottom of the stack first; the last ends on top, with its app active.
+    static func bring(_ wins: [Win]) {
+        for (k, w) in wins.enumerated() { raise(w.id, pid: w.pid, activate: k == wins.count - 1) }
+    }
+
     static func minimize(_ id: UInt32) {
         guard let el = element(id) else { return }
         AXUIElementSetAttributeValue(el, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
@@ -603,9 +608,23 @@ enum AutoRestore {
 // MARK: - overlay
 
 // "Show on screen": a group's slots drawn on the real screens, with names, for a few seconds.
+// An open window, brought to the front, gets only an outline and a name tag - it stays visible and
+// usable. A filled placeholder is only for a window that is not open.
 final class TileView: NSView {
-    var title = "", sub = "", group = "", missing = false
+    var title = "", sub = "", group = "", missing = false, frameOnly = false
     override func draw(_ dirty: NSRect) {
+        let green = NSColor(calibratedRed: 0.15, green: 0.97, blue: 0.09, alpha: 1)
+        if frameOnly {
+            let edge = NSBezierPath(rect: bounds.insetBy(dx: 2, dy: 2)); edge.lineWidth = 4
+            green.setStroke(); edge.stroke()
+            let label = (group.uppercased() + "   " + title).trimmingCharacters(in: .whitespaces) as NSString
+            let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor(white: 0.04, alpha: 1)]
+            let sz = label.size(withAttributes: attrs)
+            let tag = NSRect(x: 4, y: bounds.height - sz.height - 14, width: min(sz.width + 20, bounds.width - 8), height: sz.height + 10)
+            green.setFill(); NSBezierPath(rect: tag).fill()
+            label.draw(in: tag.insetBy(dx: 10, dy: 5), withAttributes: attrs)
+            return
+        }
         let r = bounds.insetBy(dx: 3, dy: 3)
         NSColor(calibratedRed: 0.04, green: 0.04, blue: 0.04, alpha: 0.78).setFill()
         NSBezierPath(rect: r).fill()
@@ -625,7 +644,7 @@ final class TileView: NSView {
 
 enum Overlay {
     static var windows: [NSWindow] = []
-    struct Tile { var x, y, w, h: Int; var title: String; var group: String; var sub: String; var missing: Bool }
+    struct Tile { var x, y, w, h: Int; var title: String; var group: String; var sub: String; var missing: Bool; var frame: Bool = false }
 
     static func show(_ tiles: [Tile], seconds: Double) {
         DispatchQueue.main.async {
@@ -639,7 +658,7 @@ enum Overlay {
                 win.level = .floating; win.ignoresMouseEvents = true
                 win.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
                 let v = TileView(frame: NSRect(origin: .zero, size: frame.size))
-                v.title = t.title; v.sub = t.sub; v.group = t.group; v.missing = t.missing
+                v.title = t.title; v.sub = t.sub; v.group = t.group; v.missing = t.missing; v.frameOnly = t.frame
                 win.contentView = v
                 win.orderFrontRegardless()
                 windows.append(win)
@@ -883,7 +902,7 @@ enum Api {
 
     static func action(_ b: [String: Any]) -> Response {
         let op = s(b, "op") ?? ""
-        let needsAccess: Set<String> = ["deploy", "save", "update", "replace", "front", "minimize", "frontWindow", "addToGroup"]
+        let needsAccess: Set<String> = ["deploy", "save", "update", "replace", "front", "minimize", "frontWindow", "frontHandles", "overlayHandles", "addToGroup"]
         if needsAccess.contains(op) && !Desk.trusted {
             return fail(403, "Window Groups needs Accessibility access to read and move windows: System Settings > Privacy & Security > Accessibility.")
         }
@@ -978,7 +997,7 @@ enum Api {
             guard let grp = g else { return fail(404, "No such group.") }
             let mons = Desk.monitors()
             let live = Layouts.resolve(grp, Desk.list(mons), Claude.titles(), mons).compactMap { st -> (Win, Int)? in st.window.map { ($0, st.slot.z) } }.sorted { $0.1 > $1.1 }
-            for (k, x) in live.enumerated() { Desk.raise(x.0.id, pid: x.0.pid, activate: k == live.count - 1) }
+            Desk.bring(live.map { $0.0 })
             return ok("\(live.count) window(s) of \(grp.name) brought to the front.")
 
         case "minimize":
@@ -1015,21 +1034,26 @@ enum Api {
             Store.gate.lock(); let g = Store.find(s(b, "id")); Store.gate.unlock()
             guard let grp = g else { return fail(404, "No such group.") }
             let mons = Desk.monitors()
-            let tiles = Layouts.resolve(grp, Desk.list(mons), Claude.titles(), mons).map { st in
-                Overlay.Tile(x: st.slot.x, y: st.slot.y, w: st.slot.w, h: st.slot.h, title: st.title, group: grp.name,
-                             sub: st.window == nil ? "NOT OPEN" : "OPEN  \(st.slot.w) x \(st.slot.h)", missing: st.window == nil)
+            let states = Layouts.resolve(grp, Desk.list(mons), Claude.titles(), mons).sorted { $0.slot.z > $1.slot.z }
+            if Desk.trusted { Desk.bring(states.compactMap { $0.window }) }
+            let tiles = states.map { st -> Overlay.Tile in
+                if let w = st.window { return Overlay.Tile(x: w.x, y: w.y, w: w.w, h: w.h, title: st.title, group: grp.name, sub: "", missing: false, frame: true) }
+                return Overlay.Tile(x: st.slot.x, y: st.slot.y, w: st.slot.w, h: st.slot.h, title: st.title, group: grp.name, sub: "NOT OPEN", missing: true)
             }
-            Overlay.show(tiles, seconds: 6)
-            return ok("Showing \(grp.name) on your screens for 6 seconds.")
+            Overlay.show(tiles, seconds: 4)
+            return ok("Brought \(grp.name) to the front" + (states.contains { $0.window == nil } ? " - the dashed places are windows that are not open." : "."))
 
-        case "overlayHandles":
+        case "overlayHandles", "frontHandles":
             let hs = Set(list(b, "handles"))
-            let label = s(b, "label") ?? "On screen"
-            let tiles = Desk.list(Desk.monitors()).filter { hs.contains(String($0.id)) }.map {
-                Overlay.Tile(x: $0.x, y: $0.y, w: $0.w, h: $0.h, title: $0.title, group: label, sub: "OPEN  \($0.w) x \($0.h)", missing: false)
+            let mons = Desk.monitors()
+            let wins = Desk.list(mons).filter { hs.contains(String($0.id)) }.sorted { $0.z > $1.z }
+            if wins.isEmpty { return fail(404, "Those windows are not open any more.") }
+            Desk.bring(wins)
+            if op == "overlayHandles" {
+                let label = s(b, "label") ?? "On screen"
+                Overlay.show(wins.map { Overlay.Tile(x: $0.x, y: $0.y, w: $0.w, h: $0.h, title: $0.title, group: label, sub: "", missing: false, frame: true) }, seconds: 4)
             }
-            Overlay.show(tiles, seconds: 6)
-            return ok("Showing them on your screens for 6 seconds.")
+            return ok((wins.count == 1 ? "\(wins[0].title) is" : "\(wins.count) windows are") + " in front now.")
 
         case "openAccessibility":
             Desk.askForAccess()
