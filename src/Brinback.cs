@@ -51,7 +51,7 @@ namespace Brinback
     // compares it with the tag of the latest release.
     static class AppInfo
     {
-        public const string Version = "1.6.1";
+        public const string Version = "1.6.2";
         public const string Repo = "Balkaris-ch/brinback";
     }
 
@@ -2368,27 +2368,69 @@ namespace Brinback
 
     // ============================================================ start with Windows
 
+    // Start with Windows is a shortcut in the user's Startup folder. Up to 1.6.1 it was a value
+    // under HKCU\...\Run, but recent Windows 11 builds only launch the Run entries they have already
+    // acknowledged: a newly added one sits there and is skipped at every sign-in, with no flag
+    // anywhere saying so. Startup-folder shortcuts are launched.
     static class Startup
     {
         const string RunKey = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
         const string Name = "Brinback";
 
-        public static bool On
-        {
-            get
-            {
-                using (var k = Registry.CurrentUser.OpenSubKey(RunKey))
-                    return k != null && k.GetValue(Name) != null;
-            }
-        }
+        static string Link { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "Brinback.lnk"); } }
+
+        public static bool On { get { return File.Exists(Link); } }
 
         public static void Set(bool on)
         {
-            using (var k = Registry.CurrentUser.CreateSubKey(RunKey))
+            if (on) Shortcut.Write(Link, Application.ExecutablePath, "--tray");
+            else if (File.Exists(Link)) File.Delete(Link);
+            using (var k = Registry.CurrentUser.CreateSubKey(RunKey)) k.DeleteValue(Name, false);
+        }
+
+        // At start: move a Run value left by 1.6.0/1.6.1 to the Startup folder, and repoint the
+        // shortcut if the exe was moved.
+        public static void Ensure()
+        {
+            try
             {
-                if (on) k.SetValue(Name, "\"" + Application.ExecutablePath + "\" --tray");
-                else k.DeleteValue(Name, false);
+                bool run;
+                using (var k = Registry.CurrentUser.OpenSubKey(RunKey)) run = k != null && k.GetValue(Name) != null;
+                if (run) { Set(true); Log.Write("Start with Windows: moved to the Startup folder, where Windows does launch it"); }
+                else if (On && !string.Equals(Shortcut.Target(Link), Application.ExecutablePath, StringComparison.OrdinalIgnoreCase)) Set(true);
             }
+            catch (Exception e) { Log.Write("Start with Windows: " + e.Message); }
+        }
+    }
+
+    // Windows shortcuts, through the scripting host that ships with Windows.
+    static class Shortcut
+    {
+        static object Open(string lnk, out Type st)
+        {
+            st = null;
+            Type t = Type.GetTypeFromProgID("WScript.Shell");
+            if (t == null) throw new InvalidOperationException("Windows Script Host is not available");
+            object sc = t.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, Activator.CreateInstance(t), new object[] { lnk });
+            st = sc.GetType();
+            return sc;
+        }
+
+        public static string Target(string lnk)
+        {
+            if (!File.Exists(lnk)) return null;
+            Type st; object sc = Open(lnk, out st);
+            return st.InvokeMember("TargetPath", BindingFlags.GetProperty, null, sc, null) as string;
+        }
+
+        public static void Write(string lnk, string exe, string args)
+        {
+            Type st; object sc = Open(lnk, out st);
+            st.InvokeMember("TargetPath", BindingFlags.SetProperty, null, sc, new object[] { exe });
+            st.InvokeMember("Arguments", BindingFlags.SetProperty, null, sc, new object[] { args });
+            st.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, sc, new object[] { Path.GetDirectoryName(exe) });
+            st.InvokeMember("Description", BindingFlags.SetProperty, null, sc, new object[] { "Save window layouts, bring them back" });
+            st.InvokeMember("Save", BindingFlags.InvokeMethod, null, sc, null);
         }
     }
 
@@ -2404,18 +2446,9 @@ namespace Brinback
                 string dir = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
                 string lnk = Path.Combine(dir, "Brinback.lnk");
                 string exe = Application.ExecutablePath;
-                Type t = Type.GetTypeFromProgID("WScript.Shell");
-                if (t == null) return;
-                object shell = Activator.CreateInstance(t);
-                object sc = t.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { lnk });
-                Type st = sc.GetType();
-                string now = File.Exists(lnk) ? st.InvokeMember("TargetPath", BindingFlags.GetProperty, null, sc, null) as string : null;
-                if (!string.Equals(now, exe, StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(Shortcut.Target(lnk), exe, StringComparison.OrdinalIgnoreCase))
                 {
-                    st.InvokeMember("TargetPath", BindingFlags.SetProperty, null, sc, new object[] { exe });
-                    st.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, sc, new object[] { Path.GetDirectoryName(exe) });
-                    st.InvokeMember("Description", BindingFlags.SetProperty, null, sc, new object[] { "Save window layouts, bring them back" });
-                    st.InvokeMember("Save", BindingFlags.InvokeMethod, null, sc, null);
+                    Shortcut.Write(lnk, exe, "");
                     Log.Write("Start menu: Brinback is listed, so Windows search finds it");
                 }
                 string old = Path.Combine(dir, "Window Groups.lnk");
@@ -2689,8 +2722,9 @@ namespace Brinback
             }
             if (!created)
             {
-                // Already running: bring its window forward instead of starting a second copy.
-                try { EventWaitHandle.OpenExisting("Local\\Brinback.Show").Set(); } catch { }
+                // Already running: bring its window forward instead of starting a second copy - unless
+                // this start only asked for the tray (Windows starting it at sign-in).
+                if (!trayOnly) try { EventWaitHandle.OpenExisting("Local\\Brinback.Show").Set(); } catch { }
                 return;
             }
             var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\Brinback.Show");
@@ -2707,6 +2741,7 @@ namespace Brinback
             Store.Load();
             if (firstRun) { try { Startup.Set(true); } catch { } Store.Save(); }
             Legacy.BringStartup();
+            Startup.Ensure();
             StartMenu.Ensure();
 
             Ui = new Control();

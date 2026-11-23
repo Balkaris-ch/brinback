@@ -78,8 +78,9 @@ other app's windows too.
 ## Install
 
 Download `Brinback.exe` from [Releases](../../releases) and run it. It lives in the tray
-(four tiles, one lit). On first run it adds itself to start with Windows; switch that off in
-the app or the tray menu. It also lists itself in the Start menu, so typing *Brinback* into
+(four tiles, one lit). On first run it adds itself to start with Windows - a shortcut in your
+Startup folder, because recent Windows 11 builds skip newly added `Run` registry entries at
+sign-in; switch that off in the app or the tray menu. It also lists itself in the Start menu, so typing *Brinback* into
 Windows search finds it and opens the window. Windows tucks new tray icons behind the **^**
 arrow: drag the four tiles next to the clock to keep them in view.
 
@@ -231,10 +232,10 @@ What is different on a Mac:
 
 ## Uninstall
 
-Exit from the tray menu, switch off *Start with Windows* first (or delete the `Brinback`
-value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`), delete the exe, delete
+Switch off *Start with Windows*, exit from the tray menu, delete the exe, delete
 `%APPDATA%/Brinback`, and delete `Brinback.lnk` from
-`%APPDATA%/Microsoft/Windows/Start Menu/Programs`.
+`%APPDATA%/Microsoft/Windows/Start Menu/Programs` (and from its `Startup` folder, if it is still
+there).
 
 ## Building and hacking
 
