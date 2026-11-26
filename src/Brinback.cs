@@ -51,7 +51,7 @@ namespace Brinback
     // compares it with the tag of the latest release.
     static class AppInfo
     {
-        public const string Version = "1.6.2";
+        public const string Version = "1.6.3";
         public const string Repo = "Balkaris-ch/brinback";
     }
 
@@ -821,19 +821,67 @@ namespace Brinback
 
     static class Store
     {
-        public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Brinback");
+        public static readonly string Dir = Path.Combine(AppData(), "Brinback");
         public static readonly string FilePath = Path.Combine(Dir, "groups.json");
         public static Data D = new Data();
         public static readonly object Gate = new object();
 
-        public static void Load()
+        // True while groups.json exists but cannot be read. Then nothing is saved - an empty list
+        // must never overwrite the real one - and the app keeps trying to read it.
+        public static volatile bool Blocked;
+        public static string Problem;
+
+        // Right after sign-in Windows can answer an empty AppData path for a moment. A relative
+        // "Brinback" folder next to the exe would then look like a first run.
+        static string AppData()
+        {
+            string p = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            if (string.IsNullOrEmpty(p)) p = Environment.GetEnvironmentVariable("APPDATA");
+            if (string.IsNullOrEmpty(p)) p = Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE") ?? "C:\\", "AppData\\Roaming");
+            return p;
+        }
+
+        // At start: groups.json can be locked for the first moments after sign-in (a scanner or a
+        // sync tool holding it). Wait for it up to `wait` instead of starting with no groups.
+        public static void Load(TimeSpan wait)
+        {
+            var until = DateTime.Now + wait;
+            int tries = 0;
+            while (true)
+            {
+                tries++;
+                if (TryLoad()) { if (tries > 1) Log.Write("store: groups.json readable after " + tries + " tries"); return; }
+                if (DateTime.Now >= until) break;
+                Thread.Sleep(1000);
+            }
+            Log.Write("store: groups.json could not be read (" + Problem + ") - not saving anything until it can");
+        }
+
+        public static void Load() { Load(TimeSpan.Zero); }
+
+        // Called by the timer while Blocked: picks the groups up as soon as the file opens.
+        public static void Retry()
+        {
+            if (!Blocked) return;
+            if (TryLoad()) Log.Write("store: groups.json readable again - " + D.Groups.Count + " group(s) loaded");
+        }
+
+        static bool TryLoad()
         {
             lock (Gate)
             {
-                if (!File.Exists(FilePath)) { D = new Data(); return; }
+                if (!File.Exists(FilePath)) { D = new Data(); Blocked = false; Problem = null; return true; }
+                string text;
+                try { text = File.ReadAllText(FilePath, Encoding.UTF8); }
+                catch (Exception e)
+                {
+                    // Locked or denied: the file is fine, we just cannot open it yet.
+                    D = new Data(); Blocked = true; Problem = e.Message;
+                    return false;
+                }
                 try
                 {
-                    var d = new JavaScriptSerializer().Deserialize<Data>(File.ReadAllText(FilePath, Encoding.UTF8));
+                    var d = new JavaScriptSerializer().Deserialize<Data>(text);
                     D = d ?? new Data();
                     if (D.Groups == null) D.Groups = new List<Group>();
                     if (D.Dismissed == null) D.Dismissed = new List<string>();
@@ -841,29 +889,49 @@ namespace Brinback
                 }
                 catch (Exception e)
                 {
-                    // Never start empty over a file we could not read - that would overwrite it on
-                    // the next save. Keep it aside, under a name that says what happened.
+                    // Opened but not valid: keep it aside under a name that says what happened, and
+                    // start fresh. A retry would read the same broken text.
                     string aside = Path.Combine(Dir, "groups.unreadable-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".json");
-                    try { File.Copy(FilePath, aside, true); } catch { }
-                    Log.Write("store: groups.json unreadable (" + e.Message + ") - kept as " + Path.GetFileName(aside));
+                    try { File.WriteAllText(aside, text, new UTF8Encoding(false)); } catch { }
+                    Log.Write("store: groups.json is not valid (" + e.Message + ") - kept as " + Path.GetFileName(aside));
                     D = new Data();
                 }
+                Blocked = false; Problem = null;
+                return true;
             }
         }
 
         // Temp file, then replace. A crash or a full disk halfway through must never leave an
-        // empty groups.json behind.
+        // empty groups.json behind. Once a day the current file is copied to backups\ first; the
+        // last 14 days are kept.
         public static void Save()
         {
             lock (Gate)
             {
+                if (Blocked) { Log.Write("store: not saved - groups.json could not be read yet"); return; }
                 Directory.CreateDirectory(Dir);
+                Backup();
                 string json = new JavaScriptSerializer().Serialize(D);
                 string tmp = FilePath + ".tmp";
                 File.WriteAllText(tmp, json, new UTF8Encoding(false));
                 if (File.Exists(FilePath)) File.Replace(tmp, FilePath, null);
                 else File.Move(tmp, FilePath);
             }
+        }
+
+        static void Backup()
+        {
+            try
+            {
+                if (!File.Exists(FilePath)) return;
+                string dir = Path.Combine(Dir, "backups");
+                string today = Path.Combine(dir, "groups-" + DateTime.Now.ToString("yyyy-MM-dd") + ".json");
+                if (File.Exists(today)) return;
+                Directory.CreateDirectory(dir);
+                File.Copy(FilePath, today, false);
+                foreach (var old in Directory.GetFiles(dir, "groups-*.json").OrderByDescending(f => f).Skip(14)) File.Delete(old);
+            }
+            catch (Exception e) { Log.Write("store: backup skipped - " + e.Message); }
         }
 
         public static Group Find(string id)
@@ -966,7 +1034,12 @@ namespace Brinback
                     if (File.Exists(f) && new FileInfo(f).Length > 1000000) File.Delete(f);
                     File.AppendAllText(f, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + m + Environment.NewLine, Encoding.UTF8);
                 }
-                catch { }
+                catch
+                {
+                    // The log folder cannot be written: keep the line in the temp folder instead,
+                    // so the reason is not lost.
+                    try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "Brinback-log.txt"), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + m + Environment.NewLine, Encoding.UTF8); } catch { }
+                }
             }
         }
     }
@@ -1930,6 +2003,7 @@ namespace Brinback
             res["detectedAll"] = detected(false);
             res["claudeFound"] = wins.Any(w => w.IsClaude) || titles.Count > 0;
             res["version"] = AppInfo.Version;
+            res["storeProblem"] = Store.Blocked ? (object)("Your saved groups could not be read yet (" + Store.Problem + "). Brinback keeps trying and saves nothing until then, so they are safe.") : null;
             res["update"] = Updater.State();
             res["platform"] = "windows";
             res["inset"] = 7;          // the invisible resize border around every window
@@ -2738,7 +2812,7 @@ namespace Brinback
             Legacy.StopOldCopy();
             Legacy.BringGroups();
             bool firstRun = !File.Exists(Store.FilePath);
-            Store.Load();
+            Store.Load(TimeSpan.FromSeconds(trayOnly ? 30 : 5));
             if (firstRun) { try { Startup.Set(true); } catch { } Store.Save(); }
             Legacy.BringStartup();
             Startup.Ensure();
@@ -2755,14 +2829,14 @@ namespace Brinback
                 MessageBox.Show("Brinback could not start: " + e.Message, "Brinback");
                 return;
             }
-            Log.Write("started " + AppInfo.Version + (trayOnly ? " in the tray" : "") + ", port " + Server.Port + ", " + Store.D.Groups.Count + " group(s)");
+            Log.Write("started " + AppInfo.Version + (trayOnly ? " in the tray" : "") + ", port " + Server.Port + ", " + (Store.Blocked ? "groups.json not readable yet" : Store.D.Groups.Count + " group(s)"));
 
             TrayIcon = new Tray();
             Updater.Start();
             var auto = new AutoRestore();
             auto.Init();
             var tick = new System.Windows.Forms.Timer { Interval = 1500 };
-            tick.Tick += delegate { try { auto.Tick(); } catch (Exception e) { Log.Write("auto: " + e.Message); } };
+            tick.Tick += delegate { try { if (Store.Blocked) { Store.Retry(); if (Store.Blocked) return; auto.Init(); } auto.Tick(); } catch (Exception e) { Log.Write("auto: " + e.Message); } };
             tick.Start();
 
             var listener = new Thread(() => { while (true) { showEvent.WaitOne(); OnUi(OpenUi); } }) { IsBackground = true };

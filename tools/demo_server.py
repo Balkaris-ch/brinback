@@ -67,7 +67,7 @@ def det(key, mon, kind, ws, saved=None, hidden=False):
                 hidden=hidden, handles=[w["h"] for w in ws], snap=[w["h"] for w in ws] if kind == "snap" else [], savedAs=saved)
 D = [det("0-0", 0, "snap", res, "Research"), det("0-1", 0, "snap", web, "Website", hidden=True), det("1-0", 1, "snap", snap),
      det("2-0", 2, "snap", core), det("3-0", 3, "placed", loose[:2]), det("4-0", 4, "snap", ops, "Operations")]
-STATE = dict(monitors=M, windows=W, groups=G, detected=D, detectedAll=D, claudeFound=True, version="1.6.2", platform="windows",
+STATE = dict(monitors=M, windows=W, groups=G, detected=D, detectedAll=D, claudeFound=True, version="1.6.3", platform="windows",
              update=dict(version="1.7.0", working=False, error=None) if "--update" in sys.argv else None,   # shows the Update button
             
              settings=dict(autoRestore=True, startWithWindows=True, keepSnaps=False))

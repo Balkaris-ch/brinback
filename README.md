@@ -228,7 +228,10 @@ What is different on a Mac:
 - **Auto-restore waits 2.5 seconds** after a window appears before placing it: the owning app
   positions its own windows on creation, and titles often arrive late.
 - **Saved safely.** `groups.json` is written to a temp file and swapped in, so a crash can never
-  leave it empty. A file that cannot be read is set aside, never overwritten.
+  leave it empty. A file that cannot be read is set aside, never overwritten. If it is locked
+  (right after sign-in, a scanner or sync tool can hold it), Brinback waits for it, saves
+  nothing meanwhile and says so, instead of starting with an empty list. Once a day the file is
+  copied to `backups/`; the last 14 days are kept.
 
 ## Uninstall
 

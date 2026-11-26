@@ -543,7 +543,9 @@ function render() {
 function renderGroups() {
   const el = $("#groups");
   $("#gCount").textContent = S.groups.length || "";
-  if (!S.groups.length) {
+  if (S.storeProblem) {
+    setHTML(el, '<div style="padding:18px 22px" class="hint">' + esc(S.storeProblem) + '</div>');
+  } else if (!S.groups.length) {
     setHTML(el, '<div style="padding:18px 22px" class="hint">No groups yet. Arrange some windows, then save a screen from <b>On screen now</b> below, or pick windows on the map.</div>');
   } else {
     setHTML(el, S.groups.map(g => {
