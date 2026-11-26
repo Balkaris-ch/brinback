@@ -51,7 +51,7 @@ namespace Brinback
     // compares it with the tag of the latest release.
     static class AppInfo
     {
-        public const string Version = "1.6.3";
+        public const string Version = "1.6.4";
         public const string Repo = "Balkaris-ch/brinback";
     }
 
@@ -2103,19 +2103,29 @@ namespace Brinback
                 }
                 case "delete":
                 {
+                    // One group ("id") or several ("ids", from Select all in the list).
+                    var ids = L(b, "ids");
+                    if (S(b, "id") != null) ids.Add(S(b, "id"));
                     lock (Store.Gate)
                     {
-                        var g = Store.Find(S(b, "id"));
-                        if (g == null) return Fail(404, "No such group.");
-                        Store.D.Groups.Remove(g);
-                        if (g.Snap)
+                        var gs = Store.D.Groups.Where(g => ids.Contains(g.Id)).ToList();
+                        if (gs.Count == 0) return Fail(404, "No such group.");
+                        bool snaps = false;
+                        foreach (var g in gs)
                         {
-                            Store.D.Dismissed.Add(SnapKeeper.Signature(g.Slots));
-                            if (Store.D.Dismissed.Count > 60) Store.D.Dismissed.RemoveAt(0);
+                            Store.D.Groups.Remove(g);
+                            if (g.Snap)
+                            {
+                                snaps = true;
+                                Store.D.Dismissed.Add(SnapKeeper.Signature(g.Slots));
+                                if (Store.D.Dismissed.Count > 60) Store.D.Dismissed.RemoveAt(0);
+                            }
                         }
                         Store.Save();
-                        Log.Write("deleted '" + g.Name + "'");
-                        return Ok("Deleted " + g.Name + "." + (g.Snap ? " That snap group will not be kept again unless it changes." : " The windows themselves were not touched."));
+                        if (gs.Count == 1) Log.Write("deleted '" + gs[0].Name + "'");
+                        else Log.Write("deleted " + gs.Count + " groups, " + Store.D.Groups.Count + " left");
+                        string what = gs.Count == 1 ? gs[0].Name : gs.Count + " groups";
+                        return Ok("Deleted " + what + "." + (snaps ? " Snap groups that were deleted are not kept again unless they change." : " The windows themselves were not touched."));
                     }
                 }
                 case "auto":

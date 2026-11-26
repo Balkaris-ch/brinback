@@ -30,7 +30,7 @@ import Network
 import ServiceManagement
 import WebKit
 
-let appVersion = "1.6.3"                 // must match the release tag (v + this): the updater compares them
+let appVersion = "1.6.4"                 // must match the release tag (v + this): the updater compares them
 let uiTitle = "Brinback"
 
 // MARK: - the desktop
@@ -1088,11 +1088,15 @@ enum Api {
 
         case "delete":
             Store.gate.lock(); defer { Store.gate.unlock() }
-            guard let g = Store.find(s(b, "id")) else { return fail(404, "No such group.") }
-            Store.d.groups.removeAll { $0 === g }
+            // One group ("id") or several ("ids", from Select all in the list).
+            var ids = list(b, "ids")
+            if let one = b["id"] { ids.append("\(one)") }
+            let gs = Store.d.groups.filter { ids.contains($0.id) }
+            if gs.isEmpty { return fail(404, "No such group.") }
+            Store.d.groups.removeAll { g in gs.contains { $0 === g } }
             Store.save()
-            Log.write("deleted '\(g.name)'")
-            return ok("Deleted \(g.name). The windows themselves were not touched.")
+            Log.write(gs.count == 1 ? "deleted '\(gs[0].name)'" : "deleted \(gs.count) groups, \(Store.d.groups.count) left")
+            return ok("Deleted \(gs.count == 1 ? gs[0].name : "\(gs.count) groups"). The windows themselves were not touched.")
 
         case "auto":
             Store.gate.lock(); defer { Store.gate.unlock() }

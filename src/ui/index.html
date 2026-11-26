@@ -98,7 +98,11 @@
   .glyph i { background: var(--mute-3); }
   .glyph.tiled i { background: var(--mute); }
 
-  .deploybar { padding: 16px 22px 18px; border-top: 1px solid var(--line); }
+  .deploybar { padding: 16px 22px 18px; border-top: 1px solid var(--line); display: flex; gap: 10px; }
+  .deploybar .wide { flex: 1; width: auto; }
+  .secr { display: flex; align-items: center; gap: 14px; }
+  .selall { background: none; border: 0; padding: 0; cursor: pointer; color: var(--mute); }
+  .selall:hover { color: var(--paper); }
   .detected { max-height: 38%; flex: 0 0 auto; }
   .credit { padding: 14px 22px 18px; border-top: 1px solid var(--line); color: var(--mute-3); }
 
@@ -319,9 +323,9 @@
 
   <div class="body">
     <aside>
-      <div class="sec"><span class="cap">Saved groups</span><span class="cap n" id="gCount"></span></div>
+      <div class="sec"><span class="cap">Saved groups</span><span class="secr"><button class="cap selall" id="selAll" hidden>Select all</button><span class="cap n" id="gCount"></span></span></div>
       <div class="list groups" id="groups"></div>
-      <div class="deploybar"><button class="btn primary wide" id="deploySel" disabled>Deploy selected</button></div>
+      <div class="deploybar"><button class="btn primary wide" id="deploySel" disabled>Deploy selected</button><button class="btn danger" id="deleteSel" hidden>Delete</button></div>
       <div class="sec"><span class="cap">On screen now</span><span class="cap n" id="dCount"></span></div>
       <div class="list detected" id="detected"></div>
       <div class="credit cap">Balkaris &middot; v<span id="ver"></span></div>
@@ -563,7 +567,16 @@ function renderGroups() {
   const b = $("#deploySel");
   b.disabled = n === 0;
   b.innerHTML = n ? 'Deploy ' + plural(n, "group") + ' <span class="k">' + n + '</span>' : "Tick groups to deploy together";
+  const all = S.groups.length > 0 && n === S.groups.length;
+  const sa = $("#selAll");
+  sa.hidden = !S.groups.length || !!S.storeProblem;
+  sa.textContent = all ? "Clear" : "Select all";
+  const d = $("#deleteSel");
+  d.hidden = n === 0;
+  d.textContent = all && n > 1 ? "Delete all" : "Delete";
 }
+
+function saveTicks() { localStorage.setItem("wg.ticked", JSON.stringify([...ticked])); }
 
 // A thumbnail of a group: its windows on the screen it mostly sits on.
 function miniLayout(g, cls) {
@@ -1078,6 +1091,24 @@ $("#detected").addEventListener("click", e => {
   openDetected(key);
 });
 $("#deploySel").addEventListener("click", () => run("deploy", { ids: [...ticked] }));
+$("#selAll").addEventListener("click", () => {
+  const all = S.groups.length > 0 && ticked.size === S.groups.length;
+  ticked.clear();
+  if (!all) for (const g of S.groups) ticked.add(g.id);
+  saveTicks(); renderGroups();
+});
+$("#deleteSel").addEventListener("click", async () => {
+  const ids = [...ticked], n = ids.length;
+  if (!n) return;
+  const all = n === S.groups.length;
+  const one = n === 1 ? S.groups.find(g => g.id === ids[0]) : null;
+  const title = one ? "Delete " + one.name + "?" : all ? "Delete all " + n + " groups?" : "Delete " + n + " groups?";
+  if (!await confirmBox(title, "The groups go. The windows themselves are not touched.", all && n > 1 ? "Delete all" : "Delete", true)) return;
+  await run("delete", { ids });
+  ticked.clear(); saveTicks();
+  if (view.kind === "group" && ids.includes(view.id)) view = { kind: "live" };
+  render();
+});
 
 $("#filter").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
