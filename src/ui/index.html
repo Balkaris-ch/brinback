@@ -1022,6 +1022,7 @@ function renderDetail() {
         '<button class="btn" id="frontPicked"' + (n ? "" : " disabled") + ' title="Bring them on top of everything, ready to use">Bring to front</button>' +
         '<button class="btn" id="showPicked"' + (n ? "" : " disabled") + ' title="Bring them to the front and outline them on your screens for a moment">Show on screen</button>' +
         (n ? '<button class="btn ghost" id="clearPicked">Clear</button>' : '') +
+        (!n && S.platform !== "mac" ? '<button class="btn" id="frontClaude" title="Every Claude window on top, minimized ones restored - also in the tray menu">All Claude to front</button>' : '') +
       '</div></div>' + arrangeBlock() +
       (rows.length
         ? '<div class="wl">' + rows.map(w => {
@@ -1329,6 +1330,7 @@ $("#detail").addEventListener("click", async e => {
   if (wp) { const h = wp.getAttribute("data-wpick"); picked.has(h) ? picked.delete(h) : picked.add(h); render(); return; }
   if (id === "showPicked") run("overlayHandles", { handles: [...picked], label: "Picked" });
   if (id === "frontPicked") run("frontHandles", { handles: [...picked] });
+  if (id === "frontClaude") run("frontClaude");
   const am = e.target.closest("[data-amon]");
   if (am) { arrMon = +am.getAttribute("data-amon"); renderDetail(); return; }
   const ar = e.target.closest("[data-arrange]");

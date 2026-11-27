@@ -51,7 +51,7 @@ namespace Brinback
     // compares it with the tag of the latest release.
     static class AppInfo
     {
-        public const string Version = "1.6.7";
+        public const string Version = "1.6.8";
         public const string Repo = "Balkaris-ch/brinback";
     }
 
@@ -137,7 +137,10 @@ namespace Brinback
         public int VX, VY, VW, VH;      // DWM frame - what you actually see
         public bool Min, Max; public int Z; public int Mon = -1;
         public bool Snapped;            // arranged by Windows Snap Layouts, as opposed to just placed
-        public bool IsClaude { get { return string.Equals(Process, "claude", StringComparison.OrdinalIgnoreCase); } }
+        public bool IsClaude { get { return string.Equals(Process, ClaudeProcess, StringComparison.OrdinalIgnoreCase); } }
+        // The Claude desktop app's process. Tests set BRINBACK_CLAUDE_PROCESS to the name of a
+        // throwaway window app, so they never touch real Claude windows.
+        public static readonly string ClaudeProcess = Environment.GetEnvironmentVariable("BRINBACK_CLAUDE_PROCESS") ?? "claude";
     }
 
     class Mon
@@ -809,7 +812,7 @@ namespace Brinback
         public static DateTime? ProcessStarted()
         {
             DateTime? first = null;
-            foreach (var p in Process.GetProcessesByName("claude"))
+            foreach (var p in Process.GetProcessesByName(Win.ClaudeProcess))
             {
                 try { if (first == null || p.StartTime < first) first = p.StartTime; } catch { }
             }
@@ -1608,6 +1611,37 @@ namespace Brinback
             }
             return live.Count + " window(s) of " + g.Name + " brought to the front" + note + ".";
         }
+
+        // Every Claude window on top, minimized ones restored, in the order they are stacked now.
+        // A saved layout that had one of them minimized is formed again as a snap group, as above.
+        public static string AllClaude()
+        {
+            var mons = Desk.Monitors();
+            var wins = Desk.List(mons).Where(w => w.IsClaude).OrderByDescending(w => w.Z).ToList();
+            if (wins.Count == 0) return "No Claude window is open.";
+            var wasMin = new HashSet<long>(wins.Where(w => w.Min).Select(w => w.Handle));
+            Bring(wins);
+            int regrouped = 0;
+            if (wasMin.Count > 0)
+            {
+                Thread.Sleep(400);                    // let them finish coming back
+                List<Group> gs;
+                lock (Store.Gate) gs = Store.D.Groups.ToList();
+                var open = Desk.List(mons);
+                var titles = Claude.Titles();
+                foreach (var g in gs)
+                {
+                    var live = Layouts.Resolve(g, open, titles, mons).Where(x => x.Window != null).ToList();
+                    if (!Layouts.SnapSets(g, mons).Any(set => live.Any(x => set.Contains(x.Index) && wasMin.Contains(x.Window.Handle)))) continue;
+                    regrouped += Layouts.Deploy(g, true, wasMin).Grouped;
+                }
+                Bring(wins);
+            }
+            Log.Write("front: " + wins.Count + " Claude window(s)" + (wasMin.Count > 0 ? ", " + wasMin.Count + " restored" : "") + (regrouped > 0 ? ", " + regrouped + " snap group(s) formed again" : ""));
+            return (wins.Count == 1 ? "1 Claude window" : wins.Count + " Claude windows") + " in front" +
+                   (wasMin.Count > 0 ? ", " + wasMin.Count + " of them restored" : "") +
+                   (regrouped > 0 ? ", " + (regrouped == 1 ? "a snap group" : regrouped + " snap groups") + " formed again" : "") + ".";
+        }
     }
 
     // ============================================================ on-screen preview
@@ -2245,6 +2279,8 @@ namespace Brinback
                     else if (wins.Count > 1) msg += " (Windows has no snap layout of that shape on " + m.Name + ", so they are placed, not snapped)";
                     return Ok(msg + ". Save as group keeps it.");
                 }
+                case "frontClaude":
+                    return Ok(Front.AllClaude());
                 case "frontHandles":
                 {
                     // Picked windows, or a layout found on screen, on top - in their own stacking
@@ -2746,6 +2782,16 @@ namespace Brinback
             var open = new ToolStripMenuItem("Open Brinback") { Font = new Font("Segoe UI Semibold", 9.5f) };
             open.Click += delegate { App.OpenUi(); };
             menu.Items.Add(open);
+            var claude = new ToolStripMenuItem("Bring all Claude to front");
+            claude.Click += delegate
+            {
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    string said = Front.AllClaude();
+                    if (said.StartsWith("No ")) App.OnUi(() => icon.ShowBalloonTip(2500, "Brinback", said, ToolTipIcon.None));
+                });
+            };
+            menu.Items.Add(claude);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("DEPLOY") { Enabled = false, Font = new Font("Segoe UI", 8f) });
             List<Group> groups;

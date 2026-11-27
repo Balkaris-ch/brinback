@@ -30,7 +30,7 @@ import Network
 import ServiceManagement
 import WebKit
 
-let appVersion = "1.6.7"                 // must match the release tag (v + this): the updater compares them
+let appVersion = "1.6.8"                 // must match the release tag (v + this): the updater compares them
 let uiTitle = "Brinback"
 
 // MARK: - the desktop
