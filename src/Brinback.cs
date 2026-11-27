@@ -51,7 +51,7 @@ namespace Brinback
     // compares it with the tag of the latest release.
     static class AppInfo
     {
-        public const string Version = "1.6.9";
+        public const string Version = "1.6.10";
         public const string Repo = "Balkaris-ch/brinback";
     }
 
@@ -556,6 +556,17 @@ namespace Brinback
 
         // These windows fill their screen the way a Snap Layout does: two to four of them, none
         // maximized, together covering the work area with next to no overlap.
+        static readonly double[] ZoneEdges = { 0, 0.25, 1.0 / 3, 0.5, 2.0 / 3, 0.75, 1 };
+        static bool OnEdge(double f) { return ZoneEdges.Any(e => Math.Abs(e - f) < 0.025); }
+
+        // A rectangle (clipped to the work area) whose edges all sit on Snap Layouts zone lines.
+        public static bool IsZone(N.RECT r, Mon m)
+        {
+            double x0 = (r.L - m.WX) / (double)m.WW, x1 = (r.R - m.WX) / (double)m.WW;
+            double y0 = (r.T - m.WY) / (double)m.WH, y1 = (r.B - m.WY) / (double)m.WH;
+            return OnEdge(x0) && OnEdge(x1) && OnEdge(y0) && OnEdge(y1) && x1 - x0 > 0.2 && y1 - y0 > 0.3;
+        }
+
         public static bool LooksLikeLayout(List<Slot> slots, Mon m)
         {
             if (m == null || slots.Count < 2 || slots.Count > 4 || slots.Any(s => s.Max)) return false;
@@ -571,6 +582,9 @@ namespace Brinback
                     long small = Math.Min((long)(rs[i].R - rs[i].L) * (rs[i].B - rs[i].T), (long)(rs[j].R - rs[j].L) * (rs[j].B - rs[j].T));
                     if (ix * iy > small * 0.06) return false;
                 }
+            // Every window exactly in a Snap Layouts zone (halves, thirds, quarters): a layout even
+            // with zones left empty - two windows in a three-column layout are a Windows snap group too.
+            if (rs.All(r => IsZone(r, m))) return true;
             // Area covered, counted on the grid the rectangles' own edges make.
             var xs = rs.SelectMany(r => new[] { r.L, r.R }).Distinct().OrderBy(v => v).ToList();
             var ys = rs.SelectMany(r => new[] { r.T, r.B }).Distinct().OrderBy(v => v).ToList();
@@ -648,61 +662,100 @@ namespace Brinback
             if (ClassOf(N.GetForegroundWindow()) == Host) { Snapper.Tap(VK_ESC); Thread.Sleep(200); }
         }
 
-        // wins[i] goes to targets[i], all on screen m. wins[0] opens the layout.
+        // The window to the front, then Win+Z: the Snap Layouts flyout, or Zero with why.
+        static IntPtr Open(Win w, out string why)
+        {
+            why = null;
+            var h = new IntPtr(w.Handle);
+            if (!Snapper.Front(h)) { why = "could not bring the first window to the front"; return IntPtr.Zero; }
+            Thread.Sleep(250);
+            IntPtr fly = IntPtr.Zero;
+            for (int k = 0; k < 2 && fly == IntPtr.Zero; k++)
+            {
+                if (N.GetForegroundWindow() != h) break;          // never Win+Z into a window we are not grouping
+                Snapper.ComboPlain(VK_LWIN, VK_Z);
+                fly = WaitFor("SnapFlyoutControl", 1600);
+            }
+            if (fly == IntPtr.Zero) { why = "the Snap Layouts flyout did not open"; return IntPtr.Zero; }
+            Thread.Sleep(250);
+            return fly;
+        }
+
+        // The plain layouts (not Windows' suggestions) with at least as many zones as windows; the
+        // one whose zone shapes match best, exact counts first. Returns the zone for targets[first];
+        // zoneOf[i] is the zone index targets[i] goes to.
+        static IUIAutomationElement Pick(IntPtr fly, List<Box> targets, int first, out int zonesUsed, out List<int> zoneOf)
+        {
+            int n = targets.Count;
+            IUIAutomationElement zoneForFirst = null; double best = double.MaxValue; zonesUsed = n; zoneOf = null;
+            foreach (var grid in All(fly))
+            {
+                if (Id(grid) != "LayoutGrid") continue;
+                try
+                {
+                    var parent = Ua.RawViewWalker.GetParentElement(grid);
+                    if (parent != null && Id(parent) == "WindowGroupSuggestionButton") continue;
+                    var zones = Kids(grid).Where(z => TypeOf(z) == UIA_Button).ToList();
+                    if (zones.Count < n) continue;          // more zones is fine: the empty ones stay empty
+                    var gr = grid.CurrentBoundingRectangle;
+                    double gw = gr.right - gr.left, gh = gr.bottom - gr.top;
+                    if (gw <= 0 || gh <= 0) continue;
+                    var shapes = zones.Select(z => { var r = z.CurrentBoundingRectangle; return new Box { X = (r.left - gr.left) / gw, Y = (r.top - gr.top) / gh, W = (r.right - r.left) / gw, H = (r.bottom - r.top) / gh }; }).ToList();
+                    var used = new bool[zones.Count]; double total = 0.1 * (zones.Count - n); bool fits = true;
+                    var assign = new List<int>();
+                    for (int i = 0; i < n && fits; i++)
+                    {
+                        int bi = -1; double be = double.MaxValue;
+                        for (int j = 0; j < zones.Count; j++) if (!used[j]) { double e = Err(shapes[j], targets[i]); if (e < be) { be = e; bi = j; } }
+                        if (be > 0.25) fits = false;
+                        else { used[bi] = true; total += be; assign.Add(bi); }
+                    }
+                    if (fits && total < best) { best = total; zoneForFirst = zones[assign[first]]; zonesUsed = zones.Count; zoneOf = assign; }
+                }
+                catch (COMException) { }      // a layout that vanished mid-read: the others still count
+            }
+            return zoneForFirst;
+        }
+
+        // wins[i] goes to targets[i], all on screen m.
         public static bool Form(List<Win> wins, List<Box> targets, Mon m, out string why)
         {
             why = null;
             int n = wins.Count;
             try
             {
-                var first = new IntPtr(wins[0].Handle);
-                if (!Snapper.Front(first)) { why = "could not bring the first window to the front"; return false; }
-                Thread.Sleep(250);
-
-                IntPtr fly = IntPtr.Zero;
-                for (int k = 0; k < 2 && fly == IntPtr.Zero; k++)
-                {
-                    if (N.GetForegroundWindow() != first) break;          // never Win+Z into a window we are not grouping
-                    Snapper.ComboPlain(VK_LWIN, VK_Z);
-                    fly = WaitFor("SnapFlyoutControl", 1600);
-                }
-                if (fly == IntPtr.Zero) { why = "the Snap Layouts flyout did not open"; return false; }
-                Thread.Sleep(250);
-
-                // The plain layouts (not Windows' suggestions) with as many zones as windows; the
-                // one whose zone shapes match best.
-                IUIAutomationElement zoneForFirst = null; double best = double.MaxValue;
-                foreach (var grid in All(fly))
-                {
-                    if (Id(grid) != "LayoutGrid") continue;
-                    try
-                    {
-                    var parent = Ua.RawViewWalker.GetParentElement(grid);
-                    if (parent != null && Id(parent) == "WindowGroupSuggestionButton") continue;
-                    var zones = Kids(grid).Where(z => TypeOf(z) == UIA_Button).ToList();
-                    if (zones.Count != n) continue;
-                    var gr = grid.CurrentBoundingRectangle;
-                    double gw = gr.right - gr.left, gh = gr.bottom - gr.top;
-                    if (gw <= 0 || gh <= 0) continue;
-                    var shapes = zones.Select(z => { var r = z.CurrentBoundingRectangle; return new Box { X = (r.left - gr.left) / gw, Y = (r.top - gr.top) / gh, W = (r.right - r.left) / gw, H = (r.bottom - r.top) / gh }; }).ToList();
-                    var used = new bool[n]; double total = 0; int forFirst = -1; bool fits = true;
-                    for (int i = 0; i < n && fits; i++)
-                    {
-                        int bi = -1; double be = double.MaxValue;
-                        for (int j = 0; j < n; j++) if (!used[j]) { double e = Err(shapes[j], targets[i]); if (e < be) { be = e; bi = j; } }
-                        if (be > 0.25) fits = false;
-                        else { used[bi] = true; total += be; if (i == 0) forFirst = bi; }
-                    }
-                    if (fits && total < best) { best = total; zoneForFirst = zones[forFirst]; }
-                    }
-                    catch (COMException) { }      // a layout that vanished mid-read: the others still count
-                }
+                IntPtr fly = Open(wins[0], out why);
+                if (fly == IntPtr.Zero) return false;
+                int zonesUsed; List<int> zoneOf;
+                var zoneForFirst = Pick(fly, targets, 0, out zonesUsed, out zoneOf);
                 if (zoneForFirst == null) { Dismiss(); why = "no Snap Layout on " + m.Name + " has that shape"; return false; }
+
+                // Zones left empty: Snap Assist offers the remaining zones in layout order, so the
+                // first window has to be the one that leaves the group's other zones next in line
+                // (left and right thirds: start with the right one, and the empty middle comes last).
+                int fi = 0;
+                if (zonesUsed > n)
+                {
+                    var unused = Enumerable.Range(0, zonesUsed).Where(z => !zoneOf.Contains(z)).ToList();
+                    for (int f = 0; f < n; f++)
+                    {
+                        var rest = zoneOf.Where((z, i) => i != f).ToList();
+                        if (rest.All(r => unused.All(x => r < x))) { fi = f; break; }
+                    }
+                    if (fi != 0)
+                    {
+                        Dismiss();
+                        fly = Open(wins[fi], out why);
+                        if (fly == IntPtr.Zero) return false;
+                        zoneForFirst = Pick(fly, targets, fi, out zonesUsed, out zoneOf);
+                        if (zoneForFirst == null) { Dismiss(); why = "no Snap Layout on " + m.Name + " has that shape"; return false; }
+                    }
+                }
                 var press = zoneForFirst.GetCurrentPattern(UIA_Invoke) as IUIAutomationInvokePattern;
                 if (press == null) { Dismiss(); why = "the layout zone could not be pressed"; return false; }
                 press.Invoke();
 
-                var done = new bool[n]; done[0] = true;
+                var done = new bool[n]; done[fi] = true;
                 for (int step = 1; step < n; step++)
                 {
                     var sa = WaitFor("ItemList", 2500);
@@ -724,6 +777,15 @@ namespace Brinback
                         if (cx >= b.X && cx <= b.X + b.W && cy >= b.Y && cy <= b.Y + b.H) e -= 10;   // the place the list sits in wins
                         if (e < te) { te = e; ti = i; }
                     }
+                    if (zonesUsed > n && te > -5)
+                    {
+                        // Snap Assist offers a zone this group leaves empty. What is placed so far is
+                        // a snap group if it is two or more windows; the rest go one by one.
+                        Dismiss();
+                        if (done.Count(d => d) >= 2) return true;
+                        why = "Snap Assist offered a place the group leaves empty";
+                        return false;
+                    }
                     string want = TitleOf(new IntPtr(wins[ti].Handle));
                     var item = els.FirstOrDefault(e => TypeOf(e) == UIA_ListItem && NameOf(e) == want);
                     if (item == null) { Dismiss(); why = "Snap Assist did not offer '" + UiFont.Plain(want) + "'"; return false; }
@@ -732,6 +794,11 @@ namespace Brinback
                     pick.Invoke();
                     done[ti] = true;
                     Thread.Sleep(350);
+                }
+                if (zonesUsed > n)
+                {
+                    // Zones left empty: Snap Assist waits in the next one. Close it.
+                    if (WaitFor("ItemList", 1500) != IntPtr.Zero) { Thread.Sleep(150); Dismiss(); }
                 }
                 return true;
             }
