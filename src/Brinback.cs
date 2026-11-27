@@ -51,7 +51,7 @@ namespace Brinback
     // compares it with the tag of the latest release.
     static class AppInfo
     {
-        public const string Version = "1.6.5";
+        public const string Version = "1.6.6";
         public const string Repo = "Balkaris-ch/brinback";
     }
 

@@ -131,6 +131,10 @@
 
   .stage { position: relative; margin: 10px 26px 0; min-height: 0; }
   .canvas { position: absolute; inset: 0; }
+  /* drag a box on the map to pick windows */
+  .marq { position: absolute; border: 1px solid var(--signal); background: rgba(37, 247, 22, .08); pointer-events: none; z-index: 30; }
+  .stage.marqing { user-select: none; cursor: crosshair; }
+  .tile.inmarq { border-color: var(--signal); box-shadow: inset 0 0 0 1px var(--signal); }
   .mon { position: absolute; border: 1px solid var(--line-2); background:
            radial-gradient(circle at 1px 1px, rgba(244,243,240,.045) 1px, transparent 0) 0 0 / 14px 14px, var(--ink-2); }
   .mon.dim, .mh.dim { opacity: .5; }
@@ -465,7 +469,7 @@ async function load() {
     $("#offline").classList.add("show");
   } finally { busy = false; }
 }
-setInterval(() => { if (!document.hidden && !pop && !document.querySelector(".veil")) load(); }, 2000);
+setInterval(() => { if (!document.hidden && !pop && !marq && !document.querySelector(".veil")) load(); }, 2000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
 
 // ------------------------------------------------------------------ helpers
@@ -1027,7 +1031,7 @@ function renderDetail() {
               '<button class="x fr" data-front="' + w.h + '" title="Bring to front">' + ICON_FRONT + '</button></div>';
           }).join("") + '</div>'
         : '<p class="hint" style="margin-top:16px">' + (query ? 'No window matches <b>' + esc(query) + '</b>.' : filter === "loose" ? 'Every window is in a group.' : 'Nothing here.') + '</p>') +
-      '<p class="hint" style="margin-top:14px">Tick windows here or click them on the map - across any screens - then save them as a group or add them to one. ' +
+      '<p class="hint" style="margin-top:14px">Tick windows here, click them on the map or drag a box around them there (Ctrl or Shift adds to what is picked) - across any screens - then arrange them, save them as a group or add them to one. ' +
         '<b>On screen now</b> lists the layout on every screen' + (isMac() ? '' : ' by itself, several per screen if that is how they are') + '.</p>');
     return;
   }
@@ -1196,7 +1200,69 @@ $("#grantAccess").addEventListener("click", () => run("openAccessibility"));
 $("#update").addEventListener("click", () => { shownUpdateError = null; run("selfUpdate").catch(() => {}); });
 $("#swSnap").addEventListener("click", () => run("setting", { key: "keepSnaps", value: !S.settings.keepSnaps }));
 
+// Drag a box on the map: every window tile it touches is picked, in reading order (top row first,
+// left to right), so Arrange puts them roughly where they already are. A plain drag replaces what
+// is picked, Ctrl or Shift adds to it. In a found layout it ticks that layout's windows instead.
+let marq = null, swallowClick = false;
+function marqTarget() {
+  if (view.kind === "live") return { attr: "data-pick", set: picked };
+  if (view.kind === "detected" && dpick) return { attr: "data-dpick", set: dpick };
+  return null;
+}
+// Only what you can see counts: windows of a layout stacked behind another are drawn underneath it.
+// Some point of the tile inside the box has to show this tile on top.
+function seenIn(el, b, r, attr) {
+  const l = Math.max(b.left, r.l), t = Math.max(b.top, r.t), rr = Math.min(b.right, r.r), bb = Math.min(b.bottom, r.b);
+  for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) {
+    const top = document.elementFromPoint(l + (rr - l) * (i + .5) / 6, t + (bb - t) * (j + .5) / 6);
+    if (top && top.closest("[" + attr + "]") === el) return true;
+  }
+  return false;
+}
+function marqHits(r) {
+  const t = marqTarget(); if (!t) return [];
+  return [...$("#canvas").querySelectorAll("[" + t.attr + "]")].map(el => ({ el, b: el.getBoundingClientRect() }))
+    .filter(x => x.b.right > r.l && x.b.left < r.r && x.b.bottom > r.t && x.b.top < r.b)
+    .filter(x => seenIn(x.el, x.b, r, t.attr))
+    .sort((a, b) => (Math.abs(a.b.top - b.b.top) > 12 ? a.b.top - b.b.top : 0) || a.b.left - b.b.left);
+}
+$("#stage").addEventListener("mousedown", e => {
+  if (e.button !== 0 || !marqTarget()) return;
+  if (e.target.closest("[data-gsel],[data-dsel],[data-miss],button,select,input")) return;
+  marq = { x: e.clientX, y: e.clientY, on: false, add: e.ctrlKey || e.shiftKey || e.metaKey, el: null };
+});
+document.addEventListener("mousemove", e => {
+  if (!marq) return;
+  if (!marq.on) {
+    if (Math.abs(e.clientX - marq.x) + Math.abs(e.clientY - marq.y) < 6) return;      // a click, not a drag
+    marq.on = true;
+    marq.el = document.createElement("div"); marq.el.className = "marq";
+    $("#stage").appendChild(marq.el); $("#stage").classList.add("marqing");
+  }
+  e.preventDefault();
+  const st = $("#stage").getBoundingClientRect();
+  const r = { l: Math.min(marq.x, e.clientX), t: Math.min(marq.y, e.clientY), r: Math.max(marq.x, e.clientX), b: Math.max(marq.y, e.clientY) };
+  Object.assign(marq.el.style, { left: (r.l - st.left) + "px", top: (r.t - st.top) + "px", width: (r.r - r.l) + "px", height: (r.b - r.t) + "px" });
+  marq.rect = r;
+  $("#canvas").querySelectorAll(".inmarq").forEach(x => x.classList.remove("inmarq"));
+  for (const x of marqHits(r)) x.el.classList.add("inmarq");
+});
+document.addEventListener("mouseup", e => {
+  if (!marq) return;
+  const m = marq; marq = null;
+  if (!m.on) return;
+  m.el.remove(); $("#stage").classList.remove("marqing");
+  $("#canvas").querySelectorAll(".inmarq").forEach(x => x.classList.remove("inmarq"));
+  swallowClick = true; setTimeout(() => { swallowClick = false; }, 0);              // the click that ends a drag
+  const t = marqTarget(); if (!t || !m.rect) return;
+  const hs = marqHits(m.rect).map(x => x.el.getAttribute(t.attr));
+  if (!(m.add || e.ctrlKey || e.shiftKey || e.metaKey)) t.set.clear();
+  for (const h of hs) t.set.add(h);
+  render();
+});
+
 $("#canvas").addEventListener("click", e => {
+  if (swallowClick) { swallowClick = false; return; }
   const gl = e.target.closest("[data-gsel]");
   if (gl) {
     const id = gl.getAttribute("data-gsel");

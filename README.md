@@ -49,7 +49,8 @@ other app's windows too.
   that do not match go quiet on the map, and the list under it shows exactly the ones that do -
   with the screen each is on and the group it belongs to. Tick them there or on the map.
 - **Saves any set, or adds to one.** Pick windows straight off the map or the list, across as
-  many screens as you like, and save them as a new group or *Add to group* an existing one.
+  many screens as you like - click them, or drag a box around them on the map (only the windows
+  you can see count; Ctrl or Shift adds to what is picked) - and save them as a new group or *Add to group* an existing one.
 - **Deploys as a real Windows snap group.** Windows that together fill a screen are deployed
   through Snap Layouts and Snap Assist - the way you would do it by hand - so Windows itself
   makes them one snap group: listed as a *Group* in the taskbar and in Alt+Tab, square corners,
