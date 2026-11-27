@@ -51,7 +51,7 @@ namespace Brinback
     // compares it with the tag of the latest release.
     static class AppInfo
     {
-        public const string Version = "1.6.4";
+        public const string Version = "1.6.5";
         public const string Repo = "Balkaris-ch/brinback";
     }
 
@@ -98,6 +98,12 @@ namespace Brinback
         [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
         [DllImport("kernel32.dll")] public static extern uint GetTickCount();
         [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetHandleInformation(IntPtr h, uint mask, uint flags);
+
+        // Sockets are inheritable by default, and the browser this app starts for its window would
+        // take a copy of the listening one along: the port then stays taken after this app exits,
+        // the next copy has to use another, and the open window talks to nothing.
+        public static void NoInherit(System.Net.Sockets.Socket so) { try { SetHandleInformation(so.Handle, 1, 0); } catch { } }
 
         [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr dwExtraInfo; }
         [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr dwExtraInfo; }
@@ -278,6 +284,25 @@ namespace Brinback
             return title == UiTitle &&
                    (process.Equals("msedge", StringComparison.OrdinalIgnoreCase) ||
                     process.Equals("chrome", StringComparison.OrdinalIgnoreCase));
+        }
+
+        public static List<IntPtr> FindAllUi()
+        {
+            var all = new List<IntPtr>();
+            N.EnumWindows(delegate (IntPtr h, IntPtr l)
+            {
+                if (!N.IsWindowVisible(h)) return true;
+                var sb = new StringBuilder(64);
+                N.GetWindowText(h, sb, sb.Capacity);
+                if (sb.ToString() != UiTitle) return true;
+                uint pid;
+                N.GetWindowThreadProcessId(h, out pid);
+                string pn;
+                try { pn = Process.GetProcessById((int)pid).ProcessName; } catch { return true; }
+                if (IsUiWindow(UiTitle, pn)) all.Add(h);
+                return true;
+            }, IntPtr.Zero);
+            return all;
         }
 
         public static IntPtr FindUi()
@@ -1784,14 +1809,14 @@ namespace Brinback
     {
         TcpListener lis;
         public int Port;
-        public string Token;
+        public string Token; public int Prefer;      // a port to try first: the one handed over by an update
         static readonly string CRLF = "" + (char)13 + (char)10;
 
         public void Start()
         {
-            foreach (int p in new[] { 47391, 0 })
+            foreach (int p in (Prefer > 0 && Prefer != 47391 ? new[] { Prefer, 47391, 0 } : new[] { 47391, 0 }))
             {
-                try { lis = new TcpListener(IPAddress.Loopback, p); lis.Start(); break; }
+                try { lis = new TcpListener(IPAddress.Loopback, p); lis.Start(); N.NoInherit(lis.Server); break; }
                 catch { lis = null; }
             }
             if (lis == null) throw new Exception("could not open a local port for the UI");
@@ -1805,7 +1830,7 @@ namespace Brinback
             while (true)
             {
                 TcpClient c;
-                try { c = lis.AcceptTcpClient(); } catch { return; }
+                try { c = lis.AcceptTcpClient(); N.NoInherit(c.Client); } catch { return; }
                 ThreadPool.QueueUserWorkItem(o => Serve((TcpClient)o), c);
             }
         }
@@ -2003,6 +2028,7 @@ namespace Brinback
             res["detectedAll"] = detected(false);
             res["claudeFound"] = wins.Any(w => w.IsClaude) || titles.Count > 0;
             res["version"] = AppInfo.Version;
+            res["arrange"] = Arrange.All();
             res["storeProblem"] = Store.Blocked ? (object)("Your saved groups could not be read yet (" + Store.Problem + "). Brinback keeps trying and saves nothing until then, so they are safe.") : null;
             res["update"] = Updater.State();
             res["platform"] = "windows";
@@ -2196,6 +2222,28 @@ namespace Brinback
                     if (w == null) return Fail(404, "That window is not open any more.");
                     Front.Bring(new List<Win> { w });
                     return Ok(UiFont.Plain(w.Title) + " brought to the front.");
+                }
+                case "arrange":
+                {
+                    // Picked windows into a ready-made layout on one screen, in the order picked.
+                    var want = L(b, "handles");
+                    var mons = Desk.Monitors();
+                    var open = Desk.List(mons);
+                    var wins = want.Select(h => open.FirstOrDefault(x => x.Handle.ToString() == h)).Where(x => x != null).ToList();
+                    if (wins.Count == 0) return Fail(404, "Those windows are not open any more.");
+                    var shape = Arrange.For(wins.Count).FirstOrDefault(x => x.Id == S(b, "layout"));
+                    if (shape == null) return Fail(400, "That layout is not one for " + wins.Count + " windows.");
+                    int mi; Mon m = null;
+                    if (int.TryParse(S(b, "mon") ?? "", out mi)) m = mons.FirstOrDefault(x => x.Index == mi);
+                    if (m == null) m = mons.OrderByDescending(x => wins.Count(w => w.Mon == x.Index)).ThenByDescending(x => x.Primary).First();
+                    var r = Arrange.Run(wins, shape, m);
+                    Log.Write("arrange: " + wins.Count + " window(s) as '" + shape.Name + "' on " + m.Name);
+                    string msg = shape.Name + " on " + m.Name + ": " + r.Placed + " of " + wins.Count + " placed";
+                    if (r.Grouped > 0) msg += ", as a Windows snap group";
+                    else if (wins.Count > 4) msg += " (more than four windows cannot form a Windows snap group)";
+                    else if (wins.Count > 1 && r.Snapped > 0) msg += " (Windows did not group them, so each was snapped on its own)";
+                    else if (wins.Count > 1) msg += " (Windows has no snap layout of that shape on " + m.Name + ", so they are placed, not snapped)";
+                    return Ok(msg + ". Save as group keeps it.");
                 }
                 case "frontHandles":
                 {
@@ -2438,15 +2486,112 @@ namespace Brinback
                 catch { File.Move(old, exe); throw; }
                 Log.Write("update: " + AppInfo.Version + " -> " + ver + ", restarting");
 
-                // The window belongs to this run (its token dies with it): close it, and let the
-                // new copy open its own if one was open.
-                IntPtr ui = Desk.FindUi();
-                if (ui != IntPtr.Zero) N.PostMessage(ui, 0x0010, IntPtr.Zero, IntPtr.Zero);
-                Process.Start(new ProcessStartInfo(exe, (ui != IntPtr.Zero ? "" : "--tray ") + "--after-update") { UseShellExecute = false });
+                // The new copy takes over this run's port and key, so an open window just carries on
+                // (it shows "offline" for the second or two in between). Handed over through the
+                // environment of that one process, never on a command line.
+                var psi = new ProcessStartInfo(exe, "--tray --after-update") { UseShellExecute = false };
+                psi.EnvironmentVariables[App.HandoverVar] = App.Server.Port + ":" + App.Server.Token;
+                Process.Start(psi);
                 App.Quit();
                 return null;
             }
             catch (Exception e) { return Fail(e.Message, fresh); }
+        }
+    }
+
+    // ============================================================ arrange picked windows
+
+    // Ready-made layouts for the windows picked in the window: two side by side, a 2x2 grid, and
+    // so on. Boxes are fractions of a screen's work area, in reading order: the first window picked
+    // takes the first box. Up to four windows the shapes are ones Windows' own Snap Layouts offer,
+    // so they come out as a real snap group; more than four are placed as a grid.
+    static class Arrange
+    {
+        public class Shape
+        {
+            public string Id, Name; public bool Max;
+            public double[][] Boxes;
+        }
+
+        static Shape S(string id, string name, params double[][] boxes) { return new Shape { Id = id, Name = name, Boxes = boxes }; }
+        static double[] B(double x, double y, double w, double h) { return new[] { x, y, w, h }; }
+        const double T = 1.0 / 3, TT = 2.0 / 3;
+
+        public static List<Shape> For(int n)
+        {
+            var l = new List<Shape>();
+            if (n == 1)
+            {
+                var full = S("full", "Full screen", B(0, 0, 1, 1)); full.Max = true; l.Add(full);
+                l.Add(S("left", "Left half", B(0, 0, .5, 1)));
+                l.Add(S("right", "Right half", B(.5, 0, .5, 1)));
+            }
+            else if (n == 2)
+            {
+                l.Add(S("halves", "Side by side", B(0, 0, .5, 1), B(.5, 0, .5, 1)));
+                l.Add(S("wideLeft", "Wide and narrow", B(0, 0, TT, 1), B(TT, 0, T, 1)));
+                l.Add(S("wideRight", "Narrow and wide", B(0, 0, T, 1), B(T, 0, TT, 1)));
+                l.Add(S("stack", "Top and bottom", B(0, 0, 1, .5), B(0, .5, 1, .5)));
+            }
+            else if (n == 3)
+            {
+                l.Add(S("thirds", "Three columns", B(0, 0, T, 1), B(T, 0, T, 1), B(TT, 0, T, 1)));
+                l.Add(S("halfTwo", "Half and two stacked", B(0, 0, .5, 1), B(.5, 0, .5, .5), B(.5, .5, .5, .5)));
+                l.Add(S("twoHalf", "Two stacked and half", B(0, 0, .5, .5), B(0, .5, .5, .5), B(.5, 0, .5, 1)));
+                l.Add(S("wideMiddle", "Wide middle", B(0, 0, .25, 1), B(.25, 0, .5, 1), B(.75, 0, .25, 1)));
+            }
+            else if (n == 4)
+            {
+                l.Add(S("grid", "Grid 2 x 2", B(0, 0, .5, .5), B(.5, 0, .5, .5), B(0, .5, .5, .5), B(.5, .5, .5, .5)));
+                l.Add(S("columns", "Four columns", B(0, 0, .25, 1), B(.25, 0, .25, 1), B(.5, 0, .25, 1), B(.75, 0, .25, 1)));
+                l.Add(S("halfThree", "Half and three stacked", B(0, 0, .5, 1), B(.5, 0, .5, T), B(.5, T, .5, T), B(.5, TT, .5, T)));
+            }
+            else if (n > 4 && n <= 12)
+            {
+                // Rows of equal height; the last row's windows share its full width.
+                int cols = (int)Math.Ceiling(Math.Sqrt(n)), rows = (int)Math.Ceiling(n / (double)cols);
+                var boxes = new List<double[]>();
+                for (int r = 0; r < rows; r++)
+                {
+                    int inRow = Math.Min(cols, n - r * cols);
+                    for (int c = 0; c < inRow; c++) boxes.Add(B(c / (double)inRow, r / (double)rows, 1.0 / inRow, 1.0 / rows));
+                }
+                l.Add(S("grid", "Grid", boxes.ToArray()));
+                if (n <= 6)
+                {
+                    var cs = new List<double[]>();
+                    for (int c = 0; c < n; c++) cs.Add(B(c / (double)n, 0, 1.0 / n, 1));
+                    l.Add(S("columns", n + " columns", cs.ToArray()));
+                }
+            }
+            return l;
+        }
+
+        // What the window draws its choices from: shapes for 1 to 12 windows.
+        public static Dictionary<string, object> All()
+        {
+            var d = new Dictionary<string, object>();
+            for (int n = 1; n <= 12; n++)
+                d[n.ToString()] = For(n).Select(s => (object)new Dictionary<string, object> {
+                    { "id", s.Id }, { "name", s.Name }, { "boxes", s.Boxes.Select(b => (object)b.ToList()).ToList() } }).ToList();
+            return d;
+        }
+
+        // wins in the order they were picked, onto screen m. Not saved as a group: Save as group
+        // afterwards keeps the result.
+        public static Layouts.DeployResult Run(List<Win> wins, Shape shape, Mon m)
+        {
+            var slots = new List<Slot>();
+            for (int i = 0; i < wins.Count; i++)
+            {
+                var s = Layouts.Snapshot(new[] { wins[i] })[0];
+                var b = shape.Boxes[i];
+                int x0 = m.WX + (int)Math.Round(b[0] * m.WW), y0 = m.WY + (int)Math.Round(b[1] * m.WH);
+                int x1 = m.WX + (int)Math.Round((b[0] + b[2]) * m.WW), y1 = m.WY + (int)Math.Round((b[1] + b[3]) * m.WH);
+                s.X = x0; s.Y = y0; s.W = x1 - x0; s.H = y1 - y0; s.Max = shape.Max; s.Z = wins.Count - i;
+                slots.Add(s);
+            }
+            return Layouts.Deploy(new Group { Id = "arrange", Name = shape.Name, Slots = slots });
         }
     }
 
@@ -2723,6 +2868,8 @@ namespace Brinback
         public static Http Server;
         public static Tray TrayIcon;
 
+        public const string HandoverVar = "BRINBACK_HANDOVER";
+
         public static void Quit()
         {
             OnUi(() => { try { if (TrayIcon != null) TrayIcon.Hide(); Overlay.CloseAll(); } catch { } Application.Exit(); });
@@ -2736,15 +2883,23 @@ namespace Brinback
 
         // The UI is a web page in a chromeless browser window (Edge's --app mode, Chrome as a
         // fallback), with its own profile folder so it never touches anyone's browsing.
+        // True once the window on screen is known to be this run's: opened by it, or carried on
+        // from the copy that handed over at an update. Any other Brinback window is a dead one.
+        public static bool OwnUi;
+
         public static void OpenUi()
         {
-            var existing = Desk.FindUi();
-            if (existing != IntPtr.Zero)
+            var found = Desk.FindAllUi();
+            if (OwnUi && found.Count > 0)
             {
-                if (N.IsIconic(existing)) N.ShowWindow(existing, N.SW_RESTORE);
-                N.SetForegroundWindow(existing);
+                var w = found[0];
+                if (N.IsIconic(w)) N.ShowWindow(w, N.SW_RESTORE);
+                N.SetForegroundWindow(w);
                 return;
             }
+            // Any Brinback window on screen now is from an earlier run and talks to nothing. Open
+            // this run's window first - into the browser that is already running, so it is there at
+            // once - then close the dead ones.
             string url = "http://127.0.0.1:" + Server.Port + "/?t=" + Server.Token;
             string browser = FindBrowser();
             try
@@ -2752,13 +2907,50 @@ namespace Brinback
                 if (browser != null)
                 {
                     string profile = Path.Combine(Store.Dir, "ui");
+                    ForgetWindows(profile);
                     Process.Start(new ProcessStartInfo(browser,
                         "--app=\"" + url + "\" --user-data-dir=\"" + profile + "\" --no-first-run --no-default-browser-check --window-size=1380,900")
                         { UseShellExecute = false });
+                    OwnUi = true;
                 }
                 else Process.Start(url);
             }
-            catch (Exception e) { Log.Write("ui: could not open - " + e.Message); }
+            catch (Exception e) { Log.Write("ui: could not open - " + e.Message); return; }
+            if (found.Count > 0)
+            {
+                // Only once the new window is there: closing the last one first would shut the
+                // browser down under the new window. The browser can take ten seconds or more to
+                // open an app window, so this waits off the UI thread.
+                new Thread(() =>
+                {
+                    for (int t = 0; t < 300 && !Desk.FindAllUi().Any(h => !found.Contains(h)); t++) Thread.Sleep(100);
+                    foreach (var h in found) N.PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero);
+                    Log.Write("ui: replaced " + (found.Count == 1 ? "a window" : found.Count + " windows") + " left by an earlier run");
+                }) { IsBackground = true }.Start();
+            }
+        }
+
+        // The window's browser profile is Brinback's alone. After the browser was killed or crashed
+        // it would bring back every Brinback window it had open - all of them from runs that are
+        // gone, next to the new one. So when the browser is not running, its restore data goes.
+        static void ForgetWindows(string profile)
+        {
+            try
+            {
+                // Running (its lock file is held): it restores nothing, and the window opens in it.
+                string lockf = Path.Combine(profile, "lockfile");
+                if (File.Exists(lockf)) { try { using (File.Open(lockf, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { } } catch { return; } }
+                string ses = Path.Combine(profile, "Default", "Sessions");
+                if (Directory.Exists(ses)) foreach (var f in Directory.GetFiles(ses)) { try { File.Delete(f); } catch { } }
+                string pref = Path.Combine(profile, "Default", "Preferences");
+                if (File.Exists(pref))
+                {
+                    string t0 = File.ReadAllText(pref, Encoding.UTF8);
+                    string t1 = t0.Replace("\"exit_type\":\"Crashed\"", "\"exit_type\":\"Normal\"").Replace("\"exited_cleanly\":false", "\"exited_cleanly\":true");
+                    if (t1 != t0) File.WriteAllText(pref, t1, new UTF8Encoding(false));
+                }
+            }
+            catch (Exception e) { Log.Write("ui: could not clear the window profile's restore data - " + e.Message); }
         }
 
         static string FindBrowser()
@@ -2831,7 +3023,16 @@ namespace Brinback
             Ui = new Control();
             var forceHandle = Ui.Handle;
 
-            Server = new Http { Token = NewToken() };
+            // After an update: the port and key the window already uses.
+            int handPort = 0; string handToken = null;
+            string hand = Environment.GetEnvironmentVariable(HandoverVar);
+            Environment.SetEnvironmentVariable(HandoverVar, null);       // not passed on to the browser
+            if (!string.IsNullOrEmpty(hand) && hand.IndexOf(':') > 0)
+            {
+                int.TryParse(hand.Substring(0, hand.IndexOf(':')), out handPort);
+                handToken = hand.Substring(hand.IndexOf(':') + 1);
+            }
+            Server = new Http { Token = string.IsNullOrEmpty(handToken) ? NewToken() : handToken, Prefer = handPort };
             try { Server.Start(); }
             catch (Exception e)
             {
@@ -2840,6 +3041,17 @@ namespace Brinback
                 return;
             }
             Log.Write("started " + AppInfo.Version + (trayOnly ? " in the tray" : "") + ", port " + Server.Port + ", " + (Store.Blocked ? "groups.json not readable yet" : Store.D.Groups.Count + " group(s)"));
+
+            // A Brinback window still open from a copy that is gone (an update from before 1.6.5, a
+            // crash, a kill) talks to a dead port with a dead key, and opening the window would only
+            // bring that one forward. Close it and open a working one in its place.
+            bool carriedOn = handToken != null && Server.Port == handPort;
+            bool reopen = false;
+            if (Desk.FindAllUi().Count > 0)
+            {
+                if (carriedOn) OwnUi = true;      // the update's window carries on as it is
+                else reopen = true;               // replaced by a working one below
+            }
 
             TrayIcon = new Tray();
             Updater.Start();
@@ -2852,7 +3064,7 @@ namespace Brinback
             var listener = new Thread(() => { while (true) { showEvent.WaitOne(); OnUi(OpenUi); } }) { IsBackground = true };
             listener.Start();
 
-            if (!trayOnly) OpenUi();
+            if (!trayOnly || reopen) OpenUi();
             Application.Run();
             TrayIcon.Hide();
             GC.KeepAlive(mutex);

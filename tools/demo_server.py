@@ -67,7 +67,17 @@ def det(key, mon, kind, ws, saved=None, hidden=False):
                 hidden=hidden, handles=[w["h"] for w in ws], snap=[w["h"] for w in ws] if kind == "snap" else [], savedAs=saved)
 D = [det("0-0", 0, "snap", res, "Research"), det("0-1", 0, "snap", web, "Website", hidden=True), det("1-0", 1, "snap", snap),
      det("2-0", 2, "snap", core), det("3-0", 3, "placed", loose[:2]), det("4-0", 4, "snap", ops, "Operations")]
-STATE = dict(monitors=M, windows=W, groups=G, detected=D, detectedAll=D, claudeFound=True, version="1.6.4", platform="windows",
+# The layouts Brinback offers for picked windows (Arrange.For in src/Brinback.cs), 2 to 4 windows.
+T, TT = 1/3, 2/3
+ARRANGE = {
+  "2": [dict(id="halves", name="Side by side", boxes=[[0,0,.5,1],[.5,0,.5,1]]), dict(id="wideLeft", name="Wide and narrow", boxes=[[0,0,TT,1],[TT,0,T,1]]),
+        dict(id="wideRight", name="Narrow and wide", boxes=[[0,0,T,1],[T,0,TT,1]]), dict(id="stack", name="Top and bottom", boxes=[[0,0,1,.5],[0,.5,1,.5]])],
+  "3": [dict(id="thirds", name="Three columns", boxes=[[0,0,T,1],[T,0,T,1],[TT,0,T,1]]), dict(id="halfTwo", name="Half and two stacked", boxes=[[0,0,.5,1],[.5,0,.5,.5],[.5,.5,.5,.5]]),
+        dict(id="twoHalf", name="Two stacked and half", boxes=[[0,0,.5,.5],[0,.5,.5,.5],[.5,0,.5,1]]), dict(id="wideMiddle", name="Wide middle", boxes=[[0,0,.25,1],[.25,0,.5,1],[.75,0,.25,1]])],
+  "4": [dict(id="grid", name="Grid 2 x 2", boxes=[[0,0,.5,.5],[.5,0,.5,.5],[0,.5,.5,.5],[.5,.5,.5,.5]]), dict(id="columns", name="Four columns", boxes=[[0,0,.25,1],[.25,0,.25,1],[.5,0,.25,1],[.75,0,.25,1]]),
+        dict(id="halfThree", name="Half and three stacked", boxes=[[0,0,.5,1],[.5,0,.5,T],[.5,T,.5,T],[.5,TT,.5,T]])],
+}
+STATE = dict(monitors=M, arrange=ARRANGE, windows=W, groups=G, detected=D, detectedAll=D, claudeFound=True, version="1.6.5", platform="windows",
              update=dict(version="1.7.0", working=False, error=None) if "--update" in sys.argv else None,   # shows the Update button
             
              settings=dict(autoRestore=True, startWithWindows=True, keepSnaps=False))

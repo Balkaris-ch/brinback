@@ -56,6 +56,14 @@ other app's windows too.
   shared edges. Any layout Snap Layouts offers on that screen works: halves, quarters, thirds,
   two-thirds, the wide centre. Windows that do not fill a screen go back to their exact place and
   size. Tick several groups and deploy them together, or pick one from the tray menu.
+- **Arranges picked windows for you.** Pick some windows and *Arrange* offers layouts for that
+  many: side by side or wide and narrow for two, three columns or a half and two stacked for
+  three, a 2 x 2 grid, four columns or a half and three stacked for four, a grid beyond that. Pick
+  the screen, click a layout: the first window you picked takes the first place. Where Snap
+  Layouts offers that shape on the screen they become a real Windows snap group. *Save as group*
+  keeps the result.
+- **Select all, delete all.** *Select all* in the Saved groups header ticks every group; with
+  groups ticked, *Delete* sits next to *Deploy*.
 - **Bring to front, minimize.** Bring a group's windows on top of everything without moving
   them - the quick answer to two groups stacked on one screen - or minimize them all.
   Double-click any window on the map to bring just that one to the front.
@@ -70,8 +78,8 @@ other app's windows too.
   other open window in that place; the slot keeps its position and size.
 - **Update positions.** Rearranged a group and like it better? *Update positions*.
 - **Keeps itself up to date.** When a newer release is out, *Update available* shows in the
-  header and in the tray menu. One click downloads it, checks it and restarts - see
-  [Updates](#updates).
+  header and in the tray menu. One click downloads it, checks it and restarts, and an open
+  Brinback window just carries on with the new version - see [Updates](#updates).
 
 ![Every screen with the groups on it, front to back - and the windows in none](docs/detected.png)
 

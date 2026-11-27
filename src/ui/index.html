@@ -234,6 +234,21 @@
   .bar { flex-wrap: wrap; row-gap: 8px; }
   /* the window list under the map */
   .wl { margin-top: 16px; border-top: 1px solid var(--line); }
+  /* arrange picked windows */
+  .arr { margin-top: 18px; padding: 16px 0 4px; border-top: 1px solid var(--line); }
+  .arr .top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+  .arr .lbl { color: var(--mute); }
+  .arr .shapes { display: flex; gap: 10px; flex-wrap: wrap; }
+  .arr .shape { background: none; border: 1px solid var(--line-2); border-radius: 2px; padding: 10px 10px 8px; cursor: pointer;
+               display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--mute); width: 112px; transition: border-color .15s, color .15s; }
+  .arr .shape:hover { border-color: var(--signal); color: var(--paper); }
+  .arr .shape svg { display: block; }
+  .arr .shape rect { fill: #3a3a3f; }
+  .arr .shape:hover rect { fill: var(--paper); }
+  .arr .shape rect.first { fill: var(--signal); }
+  .arr .shape text { font: 600 9px var(--mono); fill: var(--mute); }
+  .arr .shape text.f, .arr .shape:hover text { fill: #0e0e10; }
+  .arr .shape span { font-size: 11.5px; text-align: center; line-height: 1.25; }
   .wrow { display: grid; grid-template-columns: 16px 1fr 130px 200px 30px; gap: 14px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
   .wrow:hover { background: var(--ink-2); }
   .wrow .name { font-size: 13px; font-weight: 400; }
@@ -348,7 +363,7 @@
   </div>
 </div>
 <div class="toast" id="toast"></div>
-<div class="offline" id="offline"><div class="cap">Brinback is not running. Start it again.</div></div>
+<div class="offline" id="offline"><div class="cap" id="offlineText">Brinback is not running. Start it again.</div></div>
 <div class="access" id="access"><span><b>Brinback needs Accessibility access</b> to read window names and move windows. macOS lets no app do that without your say-so.</span><button class="btn primary" id="grantAccess">Open System Settings</button></div>
 
 <script>
@@ -412,7 +427,7 @@ function membership() {
 // ------------------------------------------------------------------ server
 async function getState() {
   const r = await fetch("/api/state", { headers: { "X-Token": TOKEN }, cache: "no-store" });
-  if (!r.ok) throw new Error(r.status);
+  if (!r.ok) { const e = new Error(r.status); e.status = r.status; throw e; }
   return r.json();
 }
 async function act(op, body) {
@@ -443,6 +458,10 @@ async function load() {
     if (view.kind === "group" && !S.groups.some(g => g.id === view.id)) view = { kind: "live" };
     render();
   } catch (e) {
+    // 403: Brinback runs, but this window belongs to an earlier run of it.
+    $("#offlineText").textContent = e && e.status === 403
+      ? "Brinback restarted and this window belongs to the earlier run. Close it, then open Brinback from the tray or the Start menu."
+      : "Brinback is not running. Start it again.";
     $("#offline").classList.add("show");
   } finally { busy = false; }
 }
@@ -939,6 +958,37 @@ function applyHover() {
   if (q.length) c.querySelectorAll(q.join(",")).forEach(e => e.classList.add("hv"));
 }
 
+// Ready-made layouts for the picked windows, on a screen of your choice. The first window picked
+// takes the green place, then the others in reading order.
+let arrMon = null;
+function arrangeShapes(n) { return (S.arrange && S.arrange[String(n)]) || []; }
+function arrangeScreen() {
+  if (arrMon != null && S.monitors.some(m => m.i === arrMon)) return arrMon;
+  const count = new Map();
+  for (const h of picked) { const w = winByH(h); if (w && w.mon >= 0) count.set(w.mon, (count.get(w.mon) || 0) + 1); }
+  const best = [...count.entries()].sort((a, b) => b[1] - a[1])[0];
+  return best ? best[0] : ((S.monitors.find(m => m.primary) || S.monitors[0] || {}).i);
+}
+function shapeSvg(boxes) {
+  const W = 88, H = 50, g = 2;
+  return '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">' + boxes.map((b, i) => {
+    const x = b[0] * W + g / 2, y = b[1] * H + g / 2, w = b[2] * W - g, h = b[3] * H - g;
+    return '<rect' + (i === 0 ? ' class="first"' : '') + ' x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + w.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="1"/>' +
+      (boxes.length <= 6 ? '<text' + (i === 0 ? ' class="f"' : '') + ' x="' + (x + 4).toFixed(1) + '" y="' + (y + 10).toFixed(1) + '">' + (i + 1) + '</text>' : '');
+  }).join("") + '</svg>';
+}
+function arrangeBlock() {
+  const n = picked.size, shapes = arrangeShapes(n);
+  if (!n || !shapes.length) return "";
+  const mon = arrangeScreen();
+  const screens = S.monitors.length > 1
+    ? '<div class="seg" id="arrMon">' + S.monitors.map(m => '<button data-amon="' + m.i + '"' + (m.i === mon ? ' class="on"' : '') + '>' + esc(m.name) + '</button>').join("") + '</div>'
+    : '';
+  return '<div class="arr"><div class="top"><span class="cap lbl">Arrange ' + plural(n, "window") + (screens ? ' on' : '') + '</span>' + screens + '</div>' +
+    '<div class="shapes">' + shapes.map(s => '<button class="shape" data-arrange="' + esc(s.id) + '" title="' + esc(s.name) + ' - in the order you picked them">' +
+      shapeSvg(s.boxes) + '<span>' + esc(s.name) + '</span></button>').join("") + '</div></div>';
+}
+
 function renderDetail() {
   const el = $("#detail");
   if (view.kind === "live") {
@@ -963,7 +1013,7 @@ function renderDetail() {
         '<button class="btn" id="frontPicked"' + (n ? "" : " disabled") + ' title="Bring them on top of everything, ready to use">Bring to front</button>' +
         '<button class="btn" id="showPicked"' + (n ? "" : " disabled") + ' title="Bring them to the front and outline them on your screens for a moment">Show on screen</button>' +
         (n ? '<button class="btn ghost" id="clearPicked">Clear</button>' : '') +
-      '</div></div>' +
+      '</div></div>' + arrangeBlock() +
       (rows.length
         ? '<div class="wl">' + rows.map(w => {
             const s = st.get(w.h), on = picked.has(w.h);
@@ -1208,6 +1258,10 @@ $("#detail").addEventListener("click", async e => {
   if (wp) { const h = wp.getAttribute("data-wpick"); picked.has(h) ? picked.delete(h) : picked.add(h); render(); return; }
   if (id === "showPicked") run("overlayHandles", { handles: [...picked], label: "Picked" });
   if (id === "frontPicked") run("frontHandles", { handles: [...picked] });
+  const am = e.target.closest("[data-amon]");
+  if (am) { arrMon = +am.getAttribute("data-amon"); renderDetail(); return; }
+  const ar = e.target.closest("[data-arrange]");
+  if (ar) { run("arrange", { handles: [...picked], layout: ar.getAttribute("data-arrange"), mon: arrangeScreen() }); return; }
   if (id === "frontDetected" && dpick) run("frontHandles", { handles: [...dpick] });
   if (id === "savePicked" || id === "saveDetected") {
     const name = ($("#newName") && $("#newName").value.trim()) || "";
