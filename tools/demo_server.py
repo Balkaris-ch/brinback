@@ -77,7 +77,7 @@ ARRANGE = {
   "4": [dict(id="grid", name="Grid 2 x 2", boxes=[[0,0,.5,.5],[.5,0,.5,.5],[0,.5,.5,.5],[.5,.5,.5,.5]]), dict(id="columns", name="Four columns", boxes=[[0,0,.25,1],[.25,0,.25,1],[.5,0,.25,1],[.75,0,.25,1]]),
         dict(id="halfThree", name="Half and three stacked", boxes=[[0,0,.5,1],[.5,0,.5,T],[.5,T,.5,T],[.5,TT,.5,T]])],
 }
-STATE = dict(monitors=M, arrange=ARRANGE, windows=W, groups=G, detected=D, detectedAll=D, claudeFound=True, version="1.6.6", platform="windows",
+STATE = dict(monitors=M, arrange=ARRANGE, windows=W, groups=G, detected=D, detectedAll=D, claudeFound=True, version="1.6.7", platform="windows",
              update=dict(version="1.7.0", working=False, error=None) if "--update" in sys.argv else None,   # shows the Update button
             
              settings=dict(autoRestore=True, startWithWindows=True, keepSnaps=False))

@@ -449,10 +449,15 @@ async function run(op, body, quiet) {
 }
 
 let busy = false;
+let pageVersion = null;              // the version that served this page
 async function load() {
   if (busy) return; busy = true;
   try {
     S = await getState();
+    // After an update the window carries on with the new copy, but this page is still the old
+    // version's. Load the new one - same address and key, so it simply reloads.
+    if (pageVersion === null) pageVersion = S.version;
+    else if (S.version && S.version !== pageVersion) { location.reload(); return; }
     $("#offline").classList.remove("show");
     if (!scopeTouched && !S.claudeFound) scope = "all";
     // forget selections that no longer exist
