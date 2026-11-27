@@ -65,9 +65,11 @@ other app's windows too.
   keeps the result.
 - **Select all, delete all.** *Select all* in the Saved groups header ticks every group; with
   groups ticked, *Delete* sits next to *Deploy*.
-- **All Claude to front.** One click - in the window or the tray menu - puts every Claude window
-  on top, minimized ones restored, and forms a saved snap layout again if one of its windows
-  was minimized.
+- **All Claude to front.** One click - in the window or the tray menu - or the shortcut
+  **Ctrl+Alt+Shift+C** from anywhere puts every Claude window on top, minimized ones restored,
+  and forms a saved snap layout again if one of its windows was minimized. Click the shortcut
+  next to the button to change it (Backspace turns it off). Not plain Ctrl+Alt+letter by default:
+  on Swiss and German keyboards that is AltGr, which types characters.
 - **Bring to front, minimize.** Bring a group's windows on top of everything without moving
   them - the quick answer to two groups stacked on one screen - or minimize them all.
   Double-click any window on the map to bring just that one to the front.

@@ -51,7 +51,7 @@ namespace Brinback
     // compares it with the tag of the latest release.
     static class AppInfo
     {
-        public const string Version = "1.6.8";
+        public const string Version = "1.6.9";
         public const string Repo = "Balkaris-ch/brinback";
     }
 
@@ -842,6 +842,8 @@ namespace Brinback
         public int Version = 2;
         public bool AutoRestore = true;
         public bool KeepSnaps = true;
+        // System-wide shortcut for All Claude to front; empty turns it off.
+        public string ClaudeHotkey = "Ctrl+Alt+Shift+C";
         public List<Group> Groups = new List<Group>();
         // Snap groups the user deleted after they were kept: not kept again unless they change.
         public List<string> Dismissed = new List<string>();
@@ -2043,7 +2045,8 @@ namespace Brinback
                             { "layout", inLayout.Contains(s.Index) },
                             { "zone", inLayout.Contains(s.Index) ? "layout" : Snapper.ZoneOf(s.Slot, mons) == Zone.None ? null : Snapper.ZoneOf(s.Slot, mons).ToString() } }).ToList() } });
                 }
-                res["settings"] = new Dictionary<string, object> { { "autoRestore", Store.D.AutoRestore }, { "startWithWindows", Startup.On }, { "keepSnaps", Store.D.KeepSnaps } };
+                res["settings"] = new Dictionary<string, object> { { "autoRestore", Store.D.AutoRestore }, { "startWithWindows", Startup.On }, { "keepSnaps", Store.D.KeepSnaps },
+                    { "hotkey", Hotkey.Me != null ? Hotkey.Me.Current : null }, { "hotkeyProblem", Hotkey.Me != null ? Hotkey.Me.Problem : null } };
             }
             res["groups"] = groups;
 
@@ -2355,6 +2358,16 @@ namespace Brinback
                 case "setting":
                 {
                     string key = S(b, "key");
+                    if (key == "hotkey")
+                    {
+                        string want = (S(b, "value") ?? "").Trim();
+                        if (Hotkey.Me == null) return Fail(500, "Shortcuts are not available.");
+                        bool ok = (bool)App.Ui.Invoke(new Func<bool>(() => Hotkey.Me.Set(want)));
+                        if (!ok) return Fail(409, Hotkey.Me.Problem + ".");
+                        lock (Store.Gate) { Store.D.ClaudeHotkey = Hotkey.Me.Current ?? ""; Store.Save(); }
+                        Log.Write("hotkey: " + (Hotkey.Me.Current ?? "off"));
+                        return Ok(Hotkey.Me.Current == null ? "The shortcut is off." : Hotkey.Me.Current + " now brings every Claude window to the front, from anywhere.");
+                    }
                     bool on = B(b, "value");
                     if (key == "autoRestore") { lock (Store.Gate) { Store.D.AutoRestore = on; Store.Save(); } return Ok(on ? "Groups will put themselves back as their windows open." : "Auto-restore is off. Deploy groups by hand."); }
                     if (key == "startWithWindows") { Startup.Set(on); return Ok(on ? "Brinback starts with Windows." : "Brinback no longer starts with Windows."); }
@@ -2631,6 +2644,89 @@ namespace Brinback
         }
     }
 
+    // ============================================================ keyboard shortcut
+
+    // One system-wide shortcut: every Claude window to the front. Ctrl+Alt+Shift+C by default -
+    // Ctrl+Alt alone is AltGr on Swiss and German keyboards, where AltGr+letter types characters.
+    // Pressing a registered hotkey also gives this app the right to bring windows forward.
+    class Hotkey : NativeWindow
+    {
+        const int WM_HOTKEY = 0x0312, Id = 1;
+        const uint MOD_ALT = 1, MOD_CONTROL = 2, MOD_SHIFT = 4, MOD_WIN = 8, MOD_NOREPEAT = 0x4000;
+        [DllImport("user32.dll", SetLastError = true)] static extern bool RegisterHotKey(IntPtr h, int id, uint mods, uint vk);
+        [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr h, int id);
+
+        public static Hotkey Me;
+        public string Current;      // what is registered now, or null
+        public string Problem;      // why the wanted one is not
+
+        public Hotkey() { CreateHandle(new CreateParams()); }
+
+        // "Ctrl+Alt+Shift+C" -> modifiers and key. Null when it is not a usable shortcut.
+        public static bool Parse(string text, out uint mods, out uint vk, out string clean)
+        {
+            mods = 0; vk = 0; clean = null;
+            if (string.IsNullOrEmpty(text)) return false;
+            var parts = text.Split('+').Select(x => x.Trim()).Where(x => x != "").ToList();
+            if (parts.Count < 2) return false;
+            var names = new List<string>();
+            foreach (var p in parts.Take(parts.Count - 1))
+            {
+                string q = p.ToLowerInvariant();
+                if (q == "ctrl" || q == "control") { mods |= MOD_CONTROL; }
+                else if (q == "alt") { mods |= MOD_ALT; }
+                else if (q == "shift") { mods |= MOD_SHIFT; }
+                else if (q == "win" || q == "meta") { mods |= MOD_WIN; }
+                else return false;
+            }
+            if ((mods & MOD_CONTROL) != 0) names.Add("Ctrl");
+            if ((mods & MOD_ALT) != 0) names.Add("Alt");
+            if ((mods & MOD_SHIFT) != 0) names.Add("Shift");
+            if ((mods & MOD_WIN) != 0) names.Add("Win");
+            string k = parts[parts.Count - 1];
+            Keys key;
+            if (k.Length == 1 && char.IsLetterOrDigit(k[0])) key = char.IsDigit(k[0]) ? (Keys)((int)Keys.D0 + (k[0] - '0')) : (Keys)char.ToUpperInvariant(k[0]);
+            else if (!Enum.TryParse(k, true, out key)) return false;
+            // A plain letter needs Ctrl, Alt or Win, or typing it would trigger the shortcut.
+            bool fkey = key >= Keys.F1 && key <= Keys.F24;
+            if (!fkey && (mods & (MOD_CONTROL | MOD_ALT | MOD_WIN)) == 0) return false;
+            vk = (uint)key;
+            string kn = key >= Keys.D0 && key <= Keys.D9 ? ((int)(key - Keys.D0)).ToString() : key.ToString();
+            names.Add(kn);
+            clean = string.Join("+", names);
+            return true;
+        }
+
+        // Swap to `text` (null or "" turns it off). On failure the previous one stays registered.
+        public bool Set(string text)
+        {
+            uint mods, vk; string clean;
+            if (string.IsNullOrEmpty(text))
+            {
+                UnregisterHotKey(Handle, Id); Current = null; Problem = null;
+                return true;
+            }
+            if (!Parse(text, out mods, out vk, out clean)) { Problem = text + " is not a shortcut Brinback can use"; return false; }
+            if (clean == Current) { Problem = null; return true; }
+            UnregisterHotKey(Handle, Id);
+            if (RegisterHotKey(Handle, Id, mods | MOD_NOREPEAT, vk)) { Current = clean; Problem = null; return true; }
+            Problem = clean + " is taken by Windows or another app";
+            uint pm, pv; string pc;
+            if (Current != null && Parse(Current, out pm, out pv, out pc) && !RegisterHotKey(Handle, Id, pm | MOD_NOREPEAT, pv)) Current = null;
+            return false;
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_HOTKEY && m.WParam.ToInt32() == Id)
+            {
+                ThreadPool.QueueUserWorkItem(delegate { try { Front.AllClaude(); } catch (Exception e) { Log.Write("hotkey: " + e.Message); } });
+                return;
+            }
+            base.WndProc(ref m);
+        }
+    }
+
     // ============================================================ start with Windows
 
     // Start with Windows is a shortcut in the user's Startup folder. Up to 1.6.1 it was a value
@@ -2783,6 +2879,7 @@ namespace Brinback
             open.Click += delegate { App.OpenUi(); };
             menu.Items.Add(open);
             var claude = new ToolStripMenuItem("Bring all Claude to front");
+            if (Hotkey.Me != null && Hotkey.Me.Current != null) claude.ShortcutKeyDisplayString = Hotkey.Me.Current;
             claude.Click += delegate
             {
                 ThreadPool.QueueUserWorkItem(delegate
@@ -3099,6 +3196,10 @@ namespace Brinback
                 else reopen = true;               // replaced by a working one below
             }
 
+            Hotkey.Me = new Hotkey();
+            string hk; lock (Store.Gate) hk = Store.D.ClaudeHotkey;
+            if (!string.IsNullOrEmpty(hk) && !Hotkey.Me.Set(hk)) Log.Write("hotkey: " + Hotkey.Me.Problem);
+            else if (!string.IsNullOrEmpty(hk)) Log.Write("hotkey: " + Hotkey.Me.Current + " brings every Claude window to the front");
             TrayIcon = new Tray();
             Updater.Start();
             var auto = new AutoRestore();

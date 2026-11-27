@@ -238,6 +238,10 @@
   .bar { flex-wrap: wrap; row-gap: 8px; }
   /* the window list under the map */
   .wl { margin-top: 16px; border-top: 1px solid var(--line); }
+  .hk { font: 500 10.5px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute); padding: 0 12px; }
+  .hk.off { color: var(--mute-3); }
+  .hk.bad { color: #ff9b5b; }
+  .hk.rec { color: var(--ink); background: var(--signal); border-color: var(--signal); }
   /* arrange picked windows */
   .arr { margin-top: 18px; padding: 16px 0 4px; border-top: 1px solid var(--line); }
   .arr .top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -998,6 +1002,31 @@ function arrangeBlock() {
       shapeSvg(s.boxes) + '<span>' + esc(s.name) + '</span></button>').join("") + '</div></div>';
 }
 
+// The system-wide shortcut for All Claude to front. Click it, then press the keys you want:
+// Esc keeps the current one, Backspace or Delete turns it off.
+let hkRec = false;
+function hotkeyChip() {
+  const st = S.settings || {}, cur = st.hotkey, bad = st.hotkeyProblem;
+  const label = hkRec ? "Press the keys..." : cur ? cur.replace(/\+/g, " + ") : "No shortcut";
+  const tip = hkRec ? "Esc keeps the current one, Backspace turns it off"
+    : (bad ? bad + ". " : "") + (cur ? "Works from anywhere. Click to change it." : "Click to set a shortcut that works from anywhere.");
+  return '<button class="btn hk' + (hkRec ? " rec" : !cur ? " off" : bad ? " bad" : "") + '" id="hotkey" title="' + esc(tip) + '">' + esc(label) + '</button>';
+}
+document.addEventListener("keydown", e => {
+  if (!hkRec) return;
+  e.preventDefault(); e.stopPropagation();
+  const k = e.key;
+  if (k === "Escape") { hkRec = false; renderDetail(); return; }
+  if (k === "Backspace" || k === "Delete") { hkRec = false; run("setting", { key: "hotkey", value: "" }).catch(() => {}).finally(renderDetail); return; }
+  if (["Control", "Alt", "Shift", "Meta", "AltGraph"].includes(k)) return;          // wait for the actual key
+  let key = e.code.startsWith("Key") ? e.code.slice(3) : e.code.startsWith("Digit") ? e.code.slice(5) : /^F\d{1,2}$/.test(e.code) ? e.code : null;
+  if (!key) { toast("Use a letter, a digit or F1-F24 with Ctrl, Alt or Win.", true); return; }
+  const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Win"].filter(Boolean);
+  if (!/^F/.test(key) && !mods.some(m => m !== "Shift")) { toast("Add Ctrl, Alt or Win - a plain key would fire while you type.", true); return; }
+  hkRec = false;
+  run("setting", { key: "hotkey", value: mods.concat(key).join("+") }).catch(() => {}).finally(renderDetail);
+}, true);
+
 function renderDetail() {
   const el = $("#detail");
   if (view.kind === "live") {
@@ -1022,7 +1051,7 @@ function renderDetail() {
         '<button class="btn" id="frontPicked"' + (n ? "" : " disabled") + ' title="Bring them on top of everything, ready to use">Bring to front</button>' +
         '<button class="btn" id="showPicked"' + (n ? "" : " disabled") + ' title="Bring them to the front and outline them on your screens for a moment">Show on screen</button>' +
         (n ? '<button class="btn ghost" id="clearPicked">Clear</button>' : '') +
-        (!n && S.platform !== "mac" ? '<button class="btn" id="frontClaude" title="Every Claude window on top, minimized ones restored - also in the tray menu">All Claude to front</button>' : '') +
+        (!n && S.platform !== "mac" ? '<button class="btn" id="frontClaude" title="Every Claude window on top, minimized ones restored - also in the tray menu">All Claude to front</button>' + hotkeyChip() : '') +
       '</div></div>' + arrangeBlock() +
       (rows.length
         ? '<div class="wl">' + rows.map(w => {
@@ -1331,6 +1360,7 @@ $("#detail").addEventListener("click", async e => {
   if (id === "showPicked") run("overlayHandles", { handles: [...picked], label: "Picked" });
   if (id === "frontPicked") run("frontHandles", { handles: [...picked] });
   if (id === "frontClaude") run("frontClaude");
+  if (id === "hotkey") { hkRec = !hkRec; renderDetail(); }
   const am = e.target.closest("[data-amon]");
   if (am) { arrMon = +am.getAttribute("data-amon"); renderDetail(); return; }
   const ar = e.target.closest("[data-arrange]");
